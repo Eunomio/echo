@@ -1,0 +1,41 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Runtime data
+backend/echo.db
+backend/echo.db-journal
+
+# Python
+backend/.venv/
+backend/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.tox/
+.coverage
+htmlcov/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+*.local
+
+# Environment variables
+.env
+backend/.env
+frontend/.env
+
+# Editor & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+.gemini/
