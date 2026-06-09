@@ -62,6 +62,58 @@
   --transition-fast: 150ms var(--ease-out);
   --transition-base: 250ms var(--ease-out);
   --transition-slow: 400ms var(--ease-out);
+
+  /* Dynamic variables */
+  --loading-overlay-bg: rgba(8, 7, 16, 0.75);
+  --container-shadow: 0 20px 50px rgba(0, 0, 0, 0.5), 0 0 30px rgba(124, 106, 255, 0.15);
+}
+
+:root.light {
+  /* Background layers */
+  --bg-base: #f7fafc;        /* Soft gray-white background */
+  --bg-primary: #ffffff;     /* Main white background */
+  --bg-secondary: #edf2f7;   /* Light gray-indigo secondary background */
+  --bg-elevated: #e2e8f0;    /* Muted elevated elements */
+  --bg-surface: #cbd5e0;     /* Stronger borders/surfaces */
+
+  /* Text */
+  --text-primary: #1a202c;   /* Dark charcoal text for maximum readability */
+  --text-secondary: #4a5568; /* Slate gray secondary text */
+  --text-muted: #718096;      /* Cool gray muted text */
+  --text-inverse: #ffffff;   /* Inverse text */
+
+  /* Accent — Indigo / Violet */
+  --accent: #5b4cc4;         /* Deeper accent for better contrast on light */
+  --accent-bright: #7c6aff;
+  --accent-dim: #4433a6;
+  --accent-glow: rgba(91, 76, 196, 0.12);
+  --accent-gradient: linear-gradient(135deg, #5b4cc4 0%, #a855f7 100%);
+
+  /* Semantic colors */
+  --green: #059669;          /* Deeper green for AAA contrast */
+  --green-dim: rgba(5, 150, 105, 0.1);
+  --amber: #d97706;          /* Deeper amber */
+  --amber-dim: rgba(217, 119, 6, 0.1);
+  --red: #dc2626;            /* Deeper red */
+  --red-dim: rgba(220, 38, 38, 0.08);
+  --blue: #2563eb;           /* Deeper blue */
+  --blue-dim: rgba(37, 99, 235, 0.08);
+
+  /* Borders & Surfaces */
+  --border: rgba(0, 0, 0, 0.08);
+  --border-hover: rgba(0, 0, 0, 0.15);
+  --glass-bg: rgba(255, 255, 255, 0.85);
+  --glass-border: rgba(0, 0, 0, 0.06);
+
+  /* Shadows */
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 8px 30px rgba(0, 0, 0, 0.1);
+  --shadow-glow: 0 0 20px var(--accent-glow);
+
+  /* Dynamic variables */
+  --loading-overlay-bg: rgba(240, 244, 248, 0.75);
+  --container-shadow: 0 20px 50px rgba(0, 0, 0, 0.08), 0 0 30px rgba(124, 106, 255, 0.06);
 }
 
 /* ---- Reset ---- */
@@ -83,6 +135,7 @@ body {
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  transition: background-color var(--transition-base), color var(--transition-base);
 }
 
 #root {
@@ -112,6 +165,7 @@ h1, h2, h3, h4, h5 {
   width: 100%;
   height: 100vh;
   background: var(--bg-base);
+  transition: background-color var(--transition-base);
 }
 
 /* ---- Sidebar ---- */
@@ -125,6 +179,7 @@ h1, h2, h3, h4, h5 {
   border-right: 1px solid var(--border);
   padding: 24px 20px;
   overflow-y: auto;
+  transition: background-color var(--transition-base), border-color var(--transition-base);
 }
 
 .sidebar-brand {
@@ -293,6 +348,7 @@ h1, h2, h3, h4, h5 {
   min-width: 0;
   position: relative;
   background: var(--bg-base);
+  transition: background-color var(--transition-base);
 }
 
 /* Subtle background pattern */
@@ -324,6 +380,7 @@ h1, h2, h3, h4, h5 {
   position: relative;
   z-index: 10;
   flex-shrink: 0;
+  transition: background-color var(--transition-base), border-color var(--transition-base);
 }
 
 .chat-header-title {
@@ -1118,7 +1175,8 @@ h1, h2, h3, h4, h5 {
   width: 90%;
   max-height: 80vh;
   overflow-y: auto;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--container-shadow);
+  transition: background-color var(--transition-base), border-color var(--transition-base), box-shadow var(--transition-base);
 }
 
 .modal-title {
@@ -1198,4 +1256,122 @@ h1, h2, h3, h4, h5 {
     flex-direction: column;
     align-items: center;
   }
+}
+
+/* ============================================================
+   FULLPAGE LOADING OVERLAY
+   ============================================================ */
+
+.fullpage-loading-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--loading-overlay-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  animation: fadeIn var(--transition-fast) ease-out;
+  transition: background-color var(--transition-slow);
+}
+
+.loading-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-elevated);
+  border: 1px solid rgba(124, 106, 255, 0.2);
+  border-radius: var(--radius-xl);
+  padding: 40px 50px;
+  box-shadow: var(--container-shadow);
+  animation: scaleIn 0.4s var(--ease-out);
+  max-width: 450px;
+  width: 90%;
+  text-align: center;
+  transition: background-color var(--transition-base), border-color var(--transition-base), box-shadow var(--transition-base);
+}
+
+.loading-pulse-ring {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: var(--accent-gradient);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 32px;
+  margin-bottom: 24px;
+  position: relative;
+  box-shadow: 0 0 20px rgba(124, 106, 255, 0.4);
+}
+
+.loading-pulse-ring::before,
+.loading-pulse-ring::after {
+  content: '';
+  position: absolute;
+  top: -6px;
+  left: -6px;
+  right: -6px;
+  bottom: -6px;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  opacity: 0;
+  animation: pulseOuter 2s cubic-bezier(0.24, 0, 0.38, 1) infinite;
+}
+
+.loading-pulse-ring::after {
+  animation-delay: 1s;
+}
+
+.loading-text {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 12px;
+  letter-spacing: 0.02em;
+}
+
+.loading-subtitle {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.loading-bar-container {
+  width: 100%;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+  margin-top: 20px;
+  margin-bottom: 8px;
+}
+
+.loading-bar-fill {
+  height: 100%;
+  background: var(--accent-gradient);
+  width: 100%;
+  border-radius: var(--radius-full);
+  animation: loadingBarProgress 2.5s infinite linear;
+}
+
+@keyframes pulseOuter {
+  0% { transform: scale(0.95); opacity: 0.8; }
+  100% { transform: scale(1.35); opacity: 0; }
+}
+
+@keyframes loadingBarProgress {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+@keyframes scaleIn {
+  from { transform: scale(0.9); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
 }

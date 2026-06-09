@@ -106,9 +106,103 @@ class LLMService:
              logger.error(f"OpenAI API call failed: {e}")
              raise
 
+    async def _call_api_stream(self, messages: list, temperature: float = 0.7):
+        """底层 API 流式调用封装，支持不同 Provider"""
+        
+        # 针对当前处于开发/作业模式，可以做个 mock 或者简单的容错
+        if not DEEPSEEK_API_KEY and not OPENAI_API_KEY:
+             logger.warning("No API key found. Using mock response.")
+             yield "Please configure the LLM API key in the .env file."
+             return
+
+        if self.provider == "deepseek":
+            async for chunk in self._call_deepseek_stream(messages, temperature):
+                yield chunk
+        elif self.provider == "openai":
+            async for chunk in self._call_openai_stream(messages, temperature):
+                yield chunk
+        else:
+            raise ValueError(f"Unsupported LLM provider: {self.provider}")
+
+    async def _call_deepseek_stream(self, messages: list, temperature: float):
+        from openai import AsyncOpenAI
+        url = DEEPSEEK_BASE_URL.rstrip('/')
+        if "api.deepseek.com" in DEEPSEEK_BASE_URL:
+            url = "https://api.deepseek.com"
+            
+        client = AsyncOpenAI(api_key=DEEPSEEK_API_KEY, base_url=f"{url}/v1" if not url.endswith("/v1") else url)
+        try:
+            response = await client.chat.completions.create(
+                model=DEEPSEEK_MODEL,
+                messages=messages,
+                temperature=temperature,
+                stream=True
+            )
+            async for chunk in response:
+                if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+        except Exception as e:
+            logger.error(f"DeepSeek stream API call failed: {e}")
+            raise
+
+    async def _call_openai_stream(self, messages: list, temperature: float):
+        from openai import AsyncOpenAI
+        client_kwargs = {"api_key": OPENAI_API_KEY}
+        if OPENAI_BASE_URL:
+            client_kwargs["base_url"] = OPENAI_BASE_URL
+        client = AsyncOpenAI(**client_kwargs)
+        try:
+            response = await client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=messages,
+                temperature=temperature,
+                stream=True
+            )
+            async for chunk in response:
+                if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+        except Exception as e:
+            logger.error(f"OpenAI stream API call failed: {e}")
+            raise
+
     # ---------------------------------------------------------
     # 业务流水线调用
     # ---------------------------------------------------------
+
+    async def analyze_emotion_and_biases_merged(self, user_input: str) -> dict:
+        """合并层 Layer 1 & 2: 一次性提取情绪与认知偏差"""
+        messages = [
+            {"role": "system", "content": prompts.MERGED_ANALYSIS_PROMPT},
+            {"role": "user", "content": f"用户输入: {user_input}"}
+        ]
+        
+        response_text = await self._call_api(messages, is_json_mode=True, temperature=0.15)
+        
+        try:
+            cleaned_text = response_text.strip()
+            if cleaned_text.startswith("```json"):
+                cleaned_text = cleaned_text[7:]
+            if cleaned_text.startswith("```"):
+                cleaned_text = cleaned_text[3:]
+            if cleaned_text.endswith("```"):
+                cleaned_text = cleaned_text[:-3]
+                
+            return json.loads(cleaned_text.strip())
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse merged CBT JSON: {response_text}")
+            # 返回默认兜底数据
+            return {
+                "emotion_analysis": {
+                    "emotion": "unknown",
+                    "intensity": 0.5,
+                    "trigger_event": user_input,
+                    "anxiety_level": "中"
+                },
+                "cognitive_biases": {
+                    "detected_biases": [],
+                    "overall_assessment": "解析失败，采用默认值"
+                }
+            }
 
     async def analyze_emotion(self, user_input: str) -> dict:
         """Layer 1: 情绪分析"""
@@ -205,6 +299,41 @@ class LLMService:
         
         return await self._call_api(messages, temperature=0.7)
 
+    async def generate_socratic_response_stream(self, user_input: str, history: list, biases: dict = None):
+        """Layer 3: Socratic Coaching 回复流式生成"""
+        messages = [
+            {"role": "system", "content": prompts.SOCRATIC_COACHING_SYSTEM_PROMPT}
+        ]
+        
+        if biases and biases.get("detected_biases"):
+            bias_info = ", ".join([b.get("bias_type", "") for b in biases.get("detected_biases", [])])
+            if bias_info:
+                messages.append({
+                    "role": "system", 
+                    "content": f"系统提示：当前检测到用户可能存在以下认知偏差：{bias_info}。请在提问中针对性地引导。"
+                })
+
+        messages.extend(history[-10:])
+        messages.append({"role": "user", "content": user_input})
+        
+        async for chunk in self._call_api_stream(messages, temperature=0.7):
+            yield chunk
+
+    async def generate_simulation_response_stream(self, user_input: str, history: list, scenario_id: str, custom_options: dict = None):
+        """社交模拟模式：流式角色扮演回复"""
+        system_prompt = prompts.get_simulation_prompt(scenario_id, custom_options)
+        
+        messages = [
+            {"role": "system", "content": system_prompt}
+        ]
+        
+        for msg in history:
+            messages.append({"role": msg["role"], "content": msg["content"]})
+        messages.append({"role": "user", "content": user_input})
+        
+        async for chunk in self._call_api_stream(messages, temperature=0.7):
+            yield chunk
+
     async def generate_conversation_report(self, history: list) -> dict:
         """对话结束时生成分析报告并打分"""
         # 将历史记录格式化为字符串
@@ -213,9 +342,13 @@ class LLMService:
             role = "用户" if msg["role"] == "user" else "AI"
             history_text += f"{role}: {msg['content']}\n"
 
-        prompt = prompts.END_CONVERSATION_REPORT_PROMPT.format(chat_history=history_text)
-        messages = [{"role": "system", "content": prompt}]
-        response_text = await self._call_api(messages, is_json_mode=True, temperature=0.7)
+        system_prompt = prompts.END_CONVERSATION_REPORT_PROMPT
+        user_content = f"以下是我们需要评估的真实对话记录，请根据这些内容为我的社交表现进行打分，并生成对应的 Markdown 分析报告：\n\n【对话记录】：\n{history_text}"
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content}
+        ]
+        response_text = await self._call_api(messages, is_json_mode=True, temperature=0.3)
         
         try:
             cleaned_text = response_text
@@ -241,11 +374,12 @@ class LLMService:
             role = "用户" if msg["role"] == "user" else "AI"
             history_text += f"{role}: {msg['content']}\n"
             
-        prompt = prompts.SIMULATION_HINT_PROMPT.format(
-            reason=hesitation_reason, 
-            chat_history=history_text
-        )
-        messages = [{"role": "system", "content": prompt}]
+        system_prompt = prompts.SIMULATION_HINT_PROMPT
+        user_content = f"以下是当前的对话记录以及我感到犹豫和困惑的原因，请为我提供一条建议的回复内容并做出简要解析：\n\n【我犹豫的原因】：{hesitation_reason}\n\n【对话记录】：\n{history_text}"
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content}
+        ]
         response_text = await self._call_api(messages, is_json_mode=True, temperature=0.7)
         
         try:

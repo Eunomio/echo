@@ -94,6 +94,18 @@ const IconHelp = () => (
   </svg>
 );
 
+const IconSun = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>
+  </svg>
+);
+
+const IconMoon = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>
+  </svg>
+);
+
 // ============================================================
 // Cognitive bias type Chinese labels
 // ============================================================
@@ -129,6 +141,20 @@ const SUGGESTIONS = [
 // App Component
 // ============================================================
 function App() {
+  const [theme, setTheme] = useState(() => {
+    return localStorage.getItem('echo-theme') || 'dark';
+  });
+
+  useEffect(() => {
+    const root = document.documentElement;
+    if (theme === 'light') {
+      root.classList.add('light');
+    } else {
+      root.classList.remove('light');
+    }
+    localStorage.setItem('echo-theme', theme);
+  }, [theme]);
+
   const [user, setUser] = useState(null);
   const [messages, setMessages] = useState([]);
   const [inputValue, setInputValue] = useState('');
@@ -250,29 +276,67 @@ function App() {
     setIsLoading(true);
 
     try {
-      const res = await apiService.sendMessage({
+      const botMsgId = `b-${Date.now()}`;
+      let botContent = '';
+      
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: botMsgId,
+          role: 'assistant',
+          content: '',
+          emotion: null,
+          biases: null,
+          isStreaming: true
+        }
+      ]);
+
+      await apiService.sendMessage({
         userId: user.id,
         conversationId,
         sessionType: activeNav,
         scenarioId: selectedScenario?.id,
         customOptions: customOptions,
         content,
+        onChunk: (chunk) => {
+          if (chunk.type === 'content') {
+            botContent += chunk.content;
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === botMsgId ? { ...msg, content: botContent } : msg
+              )
+            );
+          } else if (chunk.type === 'analysis') {
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === botMsgId
+                  ? {
+                      ...msg,
+                      emotion: chunk.emotion_analysis,
+                      biases: chunk.cognitive_biases,
+                      isStreaming: false
+                    }
+                  : msg
+              )
+            );
+          } else if (chunk.type === 'conv_id') {
+            setConversationId(chunk.conversation_id);
+          } else if (chunk.type === 'error') {
+            console.error("SSE Error:", chunk.content);
+          }
+        }
       });
 
-      if (!conversationId) setConversationId(res.conversation_id);
-
-      const botMsg = {
-        id: `b-${Date.now()}`,
-        role: 'assistant',
-        content: res.reply.content,
-        emotion: res.reply.emotion_analysis,
-        biases: res.reply.cognitive_biases,
-      };
-      setMessages((prev) => [...prev, botMsg]);
+      // Clear the streaming flag upon successful stream completion
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === botMsgId ? { ...msg, isStreaming: false } : msg
+        )
+      );
     } catch (err) {
       console.error('Send failed:', err);
       setMessages((prev) => [
-        ...prev,
+        ...prev.filter((msg) => msg.id !== botMsgId),
         {
           id: `e-${Date.now()}`,
           role: 'assistant',
@@ -297,29 +361,67 @@ function App() {
     
     setIsLoading(true);
     try {
-      const res = await apiService.sendMessage({
+      const botMsgId = `b-${Date.now()}`;
+      let botContent = '';
+      
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: botMsgId,
+          role: 'assistant',
+          content: '',
+          emotion: null,
+          biases: null,
+          isStreaming: true
+        }
+      ]);
+
+      await apiService.sendMessage({
         userId: user.id,
         conversationId,
         sessionType: activeNav,
         scenarioId: selectedScenario?.id,
         customOptions: customOptions,
         content: lastUserMsg.content,
+        onChunk: (chunk) => {
+          if (chunk.type === 'content') {
+            botContent += chunk.content;
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === botMsgId ? { ...msg, content: botContent } : msg
+              )
+            );
+          } else if (chunk.type === 'analysis') {
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === botMsgId
+                  ? {
+                      ...msg,
+                      emotion: chunk.emotion_analysis,
+                      biases: chunk.cognitive_biases,
+                      isStreaming: false
+                    }
+                  : msg
+              )
+            );
+          } else if (chunk.type === 'conv_id') {
+            setConversationId(chunk.conversation_id);
+          } else if (chunk.type === 'error') {
+            console.error("SSE Error:", chunk.content);
+          }
+        }
       });
 
-      if (!conversationId) setConversationId(res.conversation_id);
-
-      const botMsg = {
-        id: `b-${Date.now()}`,
-        role: 'assistant',
-        content: res.reply.content,
-        emotion: res.reply.emotion_analysis,
-        biases: res.reply.cognitive_biases,
-      };
-      setMessages((prev) => [...prev, botMsg]);
+      // Clear the streaming flag upon successful stream completion
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === botMsgId ? { ...msg, isStreaming: false } : msg
+        )
+      );
     } catch (err) {
       console.error('Retry failed:', err);
       setMessages((prev) => [
-        ...prev,
+        ...prev.filter((msg) => msg.id !== botMsgId),
         {
           id: `e-${Date.now()}`,
           role: 'assistant',
@@ -572,9 +674,31 @@ function App() {
     <div className="app-layout">
       {/* ---- SIDEBAR ---- */}
       <aside className="sidebar">
-        <div className="sidebar-brand">
-          <div className="brand-icon">🫧</div>
-          <span className="brand-text">Echo</span>
+        <div className="sidebar-brand" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <div className="brand-icon">🫧</div>
+            <span className="brand-text">Echo</span>
+          </div>
+          <button 
+            onClick={() => setTheme(prev => prev === 'dark' ? 'light' : 'dark')} 
+            className="theme-toggle-btn"
+            title={theme === 'dark' ? '切换至亮色模式' : '切换至深色模式'}
+            style={{
+              background: 'none',
+              border: 'none',
+              cursor: 'pointer',
+              color: 'var(--text-secondary)',
+              padding: '6px',
+              borderRadius: '50%',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              transition: 'all var(--transition-fast)',
+              outline: 'none'
+            }}
+          >
+            {theme === 'dark' ? <IconSun /> : <IconMoon />}
+          </button>
         </div>
 
         {/* Navigation */}
@@ -871,16 +995,22 @@ function App() {
                     </div>
                     <div className="message-body">
                       <div className={`bubble ${msg.role === 'user' ? 'user' : 'bot'} ${msg.isError ? 'error' : ''}`}>
-                        {msg.content}
+                        {msg.content ? msg.content : (msg.isStreaming && (
+                          <div style={{ display: 'flex', gap: '5px', alignItems: 'center', height: '18px', padding: '2px 0' }}>
+                            <div className="typing-dot" />
+                            <div className="typing-dot" />
+                            <div className="typing-dot" />
+                          </div>
+                        ))}
                         {msg.isError && (
                           <div style={{ marginTop: '12px' }}>
                             <button 
-                              className="btn primary" 
-                              style={{ padding: '6px 16px', fontSize: '13px' }} 
-                              onClick={handleRetry}
-                              disabled={isLoading}
+                               className="btn primary" 
+                               style={{ padding: '6px 16px', fontSize: '13px' }} 
+                               onClick={handleRetry}
+                               disabled={isLoading}
                             >
-                              重试请求
+                               重试请求
                             </button>
                           </div>
                         )}
@@ -913,7 +1043,7 @@ function App() {
               )}
 
               {/* Typing indicator */}
-              {isLoading && (
+              {isLoading && !messages.some(m => m.isStreaming) && (
                 <div className="typing-indicator">
                   <div className="avatar bot"><IconBot /></div>
                   <div className="typing-dots">
@@ -1087,6 +1217,25 @@ function App() {
                 </div>
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ---- FULLPAGE LOADING OVERLAY ---- */}
+      {(isEnding || generatingReportId) && (
+        <div className="fullpage-loading-overlay">
+          <div className="loading-container">
+            <div className="loading-pulse-ring">
+              <IconSparkles />
+            </div>
+            <div className="loading-text">正在生成心理成长报告</div>
+            <div className="loading-subtitle">
+              AI 认知教练正在深度复盘本次对话<br />
+              为您梳理情绪觉察、认知偏差和下一步行动建议...
+            </div>
+            <div className="loading-bar-container">
+              <div className="loading-bar-fill" />
+            </div>
           </div>
         </div>
       )}

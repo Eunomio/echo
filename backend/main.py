@@ -4,12 +4,15 @@ FastAPI 主程序和 API 路由定义
 """
 
 from fastapi import FastAPI, Depends, HTTPException, Body
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 from typing import List, Optional
 from pydantic import BaseModel
 import uvicorn
+import asyncio
+import json
 
 from database import init_db, get_db
 from models import User, Conversation, Message, EmotionLog
@@ -258,11 +261,11 @@ async def get_growth_data(user_id: int, db: AsyncSession = Depends(get_db)):
     }
 
 
-@app.post("/api/chat", response_model=ChatResponse, summary="核心交互：发送消息并获取 AI 回复")
+@app.post("/api/chat", summary="核心交互：发送消息并获取 AI 回复")
 async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)):
     """
     处理用户的聊天输入。
-    执行全套的多层 Prompt 分析：情绪提取 -> 偏差识别 -> CBT引导生成。
+    执行并发式多层 Prompt 分析：后台并发进行情绪与偏差识别，前台启动流式 CBT 引导生成。
     并持久化到数据库。
     """
     # 1. 验证用户
@@ -295,92 +298,104 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
             if msg.role in ["user", "assistant"]:
                  history.append({"role": msg.role, "content": msg.content})
 
-    # 3. 保存用户消息
+    # 3. 保存用户消息（先保存基本内容以获取ID，分析完后再补全情绪和偏差字段）
     user_msg = Message(
         conversation_id=conversation_id,
         role="user",
         content=request.content
     )
     db.add(user_msg)
-    
-    # 4. 调用 LLM 服务
-    try:
-        if request.session_type == "simulation":
-            # 社交模拟模式（前端应通过特殊格式或额外的字段传 scenario_id，为了简单，我们可以假设在 content 中带有特定标记，或者通过扩展 request 做到，这里简单使用 default scenario_id 或者截取）
-            # 对于MVP，我们可以在新建 simulation 会话时将 scenario_id 存入 title 或者作为一个新字段。
-            # 为了最简化，如果前端发送 simulation 且是第一条消息，我们将场景ID存入 scenario 字段。
-            
-            # 这里简单判断：尝试从 scenario 字段或者前端特殊约定提取。为了简单，直接调用 simulation 并传 default (如果是真实情况前端会传 scenario_id)
-            # 我们给 ChatRequest 加一个 scenario_id 字段比较合适，但我这里直接先写死或者动态取。
-            # 兼容性处理：
-            scenario_id = getattr(request, 'scenario_id', 'stranger_event')
-            custom_opts = getattr(request, 'custom_options', None)
-            reply_text = await llm_service.generate_simulation_response(request.content, history, scenario_id, custom_opts)
+    await db.commit()
+    await db.refresh(user_msg)
+
+    # 4. 定义异步 SSE 生成器
+    async def event_generator():
+        try:
+            # 立即发送 conversation_id 消息
+            yield f"data: {json.dumps({'type': 'conv_id', 'conversation_id': conversation_id})}\n\n"
+            await asyncio.sleep(0.01)
+
+            # 4a. 如果是 CBT 复盘模式，启动并行后台任务做情绪和偏差合并分析
+            analysis_task = None
+            if request.session_type != "simulation":
+                analysis_task = asyncio.create_task(
+                    llm_service.analyze_emotion_and_biases_merged(request.content)
+                )
+
+            # 4b. 启动前台回复流式生成
+            full_reply = ""
+            if request.session_type == "simulation":
+                scenario_id = getattr(request, 'scenario_id', 'stranger_event')
+                custom_opts = getattr(request, 'custom_options', None)
+                async for chunk in llm_service.generate_simulation_response_stream(
+                    request.content, history, scenario_id, custom_opts
+                ):
+                    full_reply += chunk
+                    yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
+            else:
+                async for chunk in llm_service.generate_socratic_response_stream(
+                    request.content, history, None
+                ):
+                    full_reply += chunk
+                    yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"
+
+            # 5. 等待后台 CBT 分析任务完成（通常此时流式已经耗时几秒，后台任务必定早已完成）
             emotion_data = {}
             bias_data = {}
-        else:
-            # 默认的情景复盘模式（CBT分析流水线）
-            pipeline_result = await llm_service.process_full_pipeline(
-                user_input=request.content,
-                history=history
-            )
-            reply_text = pipeline_result["reply"]
-            emotion_data = pipeline_result["emotion_analysis"]
-            bias_data = pipeline_result["cognitive_biases"]
-        
-        # 5. 保存并更新 AI 回复与分析数据
-        # 更新用户消息关联的情绪和偏差数据
-        user_msg.emotion = emotion_data.get("emotion", "")
-        user_msg.emotion_intensity = emotion_data.get("intensity", 0.0)
-        user_msg.cognitive_bias_data = bias_data
-        
-        # 记录情绪日志
-        if emotion_data.get("emotion"):
-            emo_log = EmotionLog(
-                user_id=request.user_id,
-                emotion=emotion_data.get("emotion"),
-                intensity=emotion_data.get("intensity", 0.5),
-                trigger=emotion_data.get("trigger_event", ""),
-                cognitive_biases=bias_data.get("detected_biases", [])
-            )
-            db.add(emo_log)
-        
-        # 保存 AI 助手回复消息
-        assistant_msg = Message(
-            conversation_id=conversation_id,
-            role="assistant",
-            content=reply_text
-        )
-        db.add(assistant_msg)
-        
-        # 更新会话级信息
-        conv = (await db.execute(select(Conversation).where(Conversation.id == conversation_id))).scalar_one()
-        current_biases = list(conv.cognitive_biases) if conv.cognitive_biases else []
-        new_biases = [b.get("bias_type") for b in bias_data.get("detected_biases", []) if b.get("bias_type")]
-        
-        # 简单的合并去重
-        for nb in new_biases:
-            if nb not in current_biases:
-                current_biases.append(nb)
-        conv.cognitive_biases = current_biases
+            if analysis_task:
+                try:
+                    analysis_result = await analysis_task
+                    emotion_data = analysis_result.get("emotion_analysis", {})
+                    bias_data = analysis_result.get("cognitive_biases", {})
+                except Exception as ex:
+                    logger.error(f"Background CBT analysis failed: {ex}", exc_info=True)
 
-        await db.commit()
-        
-        # 6. 构建并返回响应
-        return ChatResponse(
-            conversation_id=conversation_id,
-            reply=MessageResponse(
+            # 6. 保存并更新 AI 回复与分析数据到数据库
+            # 更新用户消息关联的情绪和偏差数据
+            user_msg.emotion = emotion_data.get("emotion", "")
+            user_msg.emotion_intensity = emotion_data.get("intensity", 0.0)
+            user_msg.cognitive_bias_data = bias_data
+            
+            # 记录情绪日志
+            if emotion_data.get("emotion"):
+                emo_log = EmotionLog(
+                    user_id=request.user_id,
+                    emotion=emotion_data.get("emotion"),
+                    intensity=emotion_data.get("intensity", 0.5),
+                    trigger=emotion_data.get("trigger_event", ""),
+                    cognitive_biases=bias_data.get("detected_biases", [])
+                )
+                db.add(emo_log)
+            
+            # 保存 AI 助手回复消息
+            assistant_msg = Message(
+                conversation_id=conversation_id,
                 role="assistant",
-                content=reply_text,
-                emotion_analysis=emotion_data,
-                cognitive_biases=bias_data
+                content=full_reply
             )
-        )
-        
-    except Exception as e:
-        logger.error(f"Chat processing error: {e}", exc_info=True)
-        await db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+            db.add(assistant_msg)
+            
+            # 更新会话级认知偏差信息
+            conv = (await db.execute(select(Conversation).where(Conversation.id == conversation_id))).scalar_one()
+            current_biases = list(conv.cognitive_biases) if conv.cognitive_biases else []
+            new_biases = [b.get("bias_type") for b in bias_data.get("detected_biases", []) if b.get("bias_type")]
+            
+            for nb in new_biases:
+                if nb not in current_biases:
+                    current_biases.append(nb)
+            conv.cognitive_biases = current_biases
+
+            await db.commit()
+
+            # 7. 发送最终的分析结构消息
+            yield f"data: {json.dumps({'type': 'analysis', 'emotion_analysis': emotion_data, 'cognitive_biases': bias_data})}\n\n"
+
+        except Exception as e:
+            logger.error(f"Error in SSE event stream: {e}", exc_info=True)
+            await db.rollback()
+            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

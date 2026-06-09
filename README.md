@@ -15,6 +15,8 @@
 
 要启动并在本地运行该系统，需要分别启动**后端服务**和**前端开发服务器**。
 
+如果希望部署到 Streamlit Community Cloud，让别人直接通过网页访问，可使用仓库根目录新增的 `streamlit_app.py` 单体入口。详细步骤见 [STREAMLIT_DEPLOY.md](STREAMLIT_DEPLOY.md)。
+
 ### 前提条件
 安装并配置好：
 *   **Python 3.9+**
