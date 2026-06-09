@@ -51,11 +51,13 @@ https://echo-api.onrender.com/api/health
 
 1. 打开 Vercel，新建 Project。
 2. 导入 GitHub 仓库 `Eunomio/echo`。
-3. Root Directory 选择：
+3. 推荐 Root Directory 选择：
 
 ```text
 frontend
 ```
+
+也可以保持仓库根目录不变；仓库根目录的 `vercel.json` 已经配置为进入 `frontend` 构建。
 
 4. Framework Preset 选择 Vite。
 5. Build Command 保持：
@@ -77,6 +79,12 @@ VITE_API_BASE_URL=https://echo-api.onrender.com/api
 ```
 
 注意替换成你自己的 Render 后端域名。
+
+如果部署后出现 `404: NOT_FOUND`，优先检查：
+
+- Vercel 的 Root Directory 是否设置为 `frontend`，或确认仓库根目录的 `vercel.json` 已在最新提交中。
+- Output Directory 是否为 `dist`（Root Directory 为 `frontend` 时）或 `frontend/dist`（Root Directory 为仓库根目录时）。
+- 最新代码是否包含 Vite SPA rewrite：`/(.*)` -> `/index.html`。
 
 ## 3. 回填 CORS
 
