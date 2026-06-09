@@ -200,16 +200,27 @@ function App() {
   // ---- Init data on mount ----
   useEffect(() => {
     const initData = async () => {
+      let activeUser = null;
       try {
-        const u = await apiService.getOrCreateUser('EchoUser');
-        setUser(u);
+        activeUser = await apiService.getOrCreateUser('EchoUser');
+        setUser(activeUser);
+      } catch (err) {
+        console.error('Failed to initialize user:', err);
+        return;
+      }
+
+      try {
         const sc = await apiService.getScenarios();
         setScenarios(sc);
-        const growth = await apiService.getGrowthData(u.id);
+      } catch (err) {
+        console.error('Failed to fetch scenarios:', err);
+      }
+
+      try {
+        const growth = await apiService.getGrowthData(activeUser.id);
         setGrowthData(growth);
       } catch (err) {
-        console.error('Failed to init:', err);
-        setUser({ id: 1, nickname: 'EchoUser', anxiety_level: 60 });
+        console.error('Failed to fetch initial growth data:', err);
       }
     };
     initData();
@@ -239,6 +250,13 @@ function App() {
       recognitionRef.current = recognition;
     }
   }, []);
+
+  const ensureUser = async () => {
+    if (user?.id) return user;
+    const freshUser = await apiService.getOrCreateUser('EchoUser');
+    setUser(freshUser);
+    return freshUser;
+  };
 
   // ---- Auto-scroll ----
   useEffect(() => {
@@ -286,6 +304,7 @@ function App() {
     const botMsgId = `b-${Date.now()}`;
     try {
       let botContent = '';
+      const activeUser = await ensureUser();
       
       setMessages((prev) => [
         ...prev,
@@ -300,7 +319,7 @@ function App() {
       ]);
 
       await apiService.sendMessage({
-        userId: user.id,
+        userId: activeUser.id,
         conversationId,
         sessionType: activeNav,
         scenarioId: selectedScenario?.id,
@@ -387,6 +406,7 @@ function App() {
     const botMsgId = `b-${Date.now()}`;
     try {
       let botContent = '';
+      const activeUser = await ensureUser();
       
       setMessages((prev) => [
         ...prev,
@@ -401,7 +421,7 @@ function App() {
       ]);
 
       await apiService.sendMessage({
-        userId: user.id,
+        userId: activeUser.id,
         conversationId,
         sessionType: activeNav,
         scenarioId: selectedScenario?.id,
