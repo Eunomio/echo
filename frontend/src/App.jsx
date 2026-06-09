@@ -275,8 +275,8 @@ function App() {
     setMessages((prev) => [...prev, userMsg]);
     setIsLoading(true);
 
+    const botMsgId = `b-${Date.now()}`;
     try {
-      const botMsgId = `b-${Date.now()}`;
       let botContent = '';
       
       setMessages((prev) => [
@@ -360,8 +360,8 @@ function App() {
     setMessages(prev => prev.filter(m => !m.isError));
     
     setIsLoading(true);
+    const botMsgId = `b-${Date.now()}`;
     try {
-      const botMsgId = `b-${Date.now()}`;
       let botContent = '';
       
       setMessages((prev) => [
