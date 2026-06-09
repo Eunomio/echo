@@ -331,6 +331,14 @@ function App() {
             setConversationId(chunk.conversation_id);
           } else if (chunk.type === 'error') {
             console.error("SSE Error:", chunk.content);
+            botContent = `后端返回错误：${chunk.content || '未知错误'}`;
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === botMsgId
+                  ? { ...msg, content: botContent, isStreaming: false, isError: true }
+                  : msg
+              )
+            );
           }
         }
       });
@@ -338,7 +346,14 @@ function App() {
       // Clear the streaming flag upon successful stream completion
       setMessages((prev) =>
         prev.map((msg) =>
-          msg.id === botMsgId ? { ...msg, isStreaming: false } : msg
+          msg.id === botMsgId
+            ? {
+                ...msg,
+                content: msg.content || '后端没有返回可显示内容。请检查 Render 日志中的大模型 API Key、模型名称或上游接口错误。',
+                isStreaming: false,
+                isError: !msg.content
+              }
+            : msg
         )
       );
     } catch (err) {
@@ -417,6 +432,14 @@ function App() {
             setConversationId(chunk.conversation_id);
           } else if (chunk.type === 'error') {
             console.error("SSE Error:", chunk.content);
+            botContent = `后端返回错误：${chunk.content || '未知错误'}`;
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === botMsgId
+                  ? { ...msg, content: botContent, isStreaming: false, isError: true }
+                  : msg
+              )
+            );
           }
         }
       });
@@ -424,7 +447,14 @@ function App() {
       // Clear the streaming flag upon successful stream completion
       setMessages((prev) =>
         prev.map((msg) =>
-          msg.id === botMsgId ? { ...msg, isStreaming: false } : msg
+          msg.id === botMsgId
+            ? {
+                ...msg,
+                content: msg.content || '后端没有返回可显示内容。请检查 Render 日志中的大模型 API Key、模型名称或上游接口错误。',
+                isStreaming: false,
+                isError: !msg.content
+              }
+            : msg
         )
       );
     } catch (err) {
