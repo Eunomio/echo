@@ -36,16 +36,17 @@ app = FastAPI(
 )
 
 def get_cors_origins() -> list[str]:
-    origins = os.getenv("CORS_ORIGINS", "*")
+    origins = os.getenv("CORS_ORIGINS", "http://localhost:5173,https://project-1q9e6.vercel.app")
     if origins.strip() == "*":
         return ["*"]
-    return [origin.strip() for origin in origins.split(",") if origin.strip()]
+    return [origin.strip().rstrip("/") for origin in origins.split(",") if origin.strip()]
 
 
 # 允许跨域
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_cors_origins(),
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
