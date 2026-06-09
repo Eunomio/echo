@@ -13,6 +13,7 @@ from pydantic import BaseModel
 import uvicorn
 import asyncio
 import json
+import os
 
 from database import init_db, get_db
 from models import User, Conversation, Message, EmotionLog
@@ -34,10 +35,17 @@ app = FastAPI(
     version="1.0.0"
 )
 
+def get_cors_origins() -> list[str]:
+    origins = os.getenv("CORS_ORIGINS", "*")
+    if origins.strip() == "*":
+        return ["*"]
+    return [origin.strip() for origin in origins.split(",") if origin.strip()]
+
+
 # 允许跨域
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 开发阶段允许所有
+    allow_origins=get_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
