@@ -127,6 +127,14 @@ const BIAS_DESCRIPTIONS = {
   all_or_nothing: '以极端、绝对的方式看待事物（非黑即白）。',
 };
 
+const formatErrorMessage = (err) => {
+  if (!err) return '未知错误';
+  if (err.response?.data?.detail) return `${err.response.status}: ${err.response.data.detail}`;
+  if (err.response?.status) return `${err.response.status}: ${err.response.statusText || '请求失败'}`;
+  if (err.message) return err.message;
+  return String(err);
+};
+
 // ============================================================
 // Quick-start suggestion prompts
 // ============================================================
@@ -335,12 +343,13 @@ function App() {
       );
     } catch (err) {
       console.error('Send failed:', err);
+      const errorMessage = formatErrorMessage(err);
       setMessages((prev) => [
         ...prev.filter((msg) => msg.id !== botMsgId),
         {
           id: `e-${Date.now()}`,
           role: 'assistant',
-          content: '抱歉，连接出现问题。请检查后端服务是否在运行，然后重试。',
+          content: `抱歉，连接出现问题。\n\n错误信息：${errorMessage}\n\n请检查 Vercel 的 VITE_API_BASE_URL 是否为 Render 后端地址，并确认 Render 后端已部署成功。`,
           isError: true
         },
       ]);
@@ -420,12 +429,13 @@ function App() {
       );
     } catch (err) {
       console.error('Retry failed:', err);
+      const errorMessage = formatErrorMessage(err);
       setMessages((prev) => [
         ...prev.filter((msg) => msg.id !== botMsgId),
         {
           id: `e-${Date.now()}`,
           role: 'assistant',
-          content: '抱歉，连接依然存在问题。请重试。',
+          content: `抱歉，连接依然存在问题。\n\n错误信息：${errorMessage}`,
           isError: true
         },
       ]);

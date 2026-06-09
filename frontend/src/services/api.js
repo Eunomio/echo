@@ -14,6 +14,16 @@ const apiClient = axios.create({
   }
 });
 
+const getHttpError = async (response) => {
+  let details = '';
+  try {
+    details = await response.text();
+  } catch {
+    details = '';
+  }
+  return new Error(`HTTP ${response.status} ${response.statusText}${details ? `: ${details}` : ''}`);
+};
+
 export const apiService = {
   // 1. 获取测试用户
   async getOrCreateUser(nickname = '测试用户') {
@@ -70,7 +80,7 @@ export const apiService = {
         });
 
         if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
+          throw await getHttpError(response);
         }
 
         const reader = response.body.getReader();
@@ -113,7 +123,7 @@ export const apiService = {
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        throw await getHttpError(response);
       }
 
       const reader = response.body.getReader();
