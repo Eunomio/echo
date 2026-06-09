@@ -13,6 +13,7 @@ Streamlit 版本只适合快速演示核心功能。若要线上界面与本地 
 4. 在 Render 的环境变量中填写：
 
 ```text
+PYTHON_VERSION=3.11
 DEEPSEEK_API_KEY=你的 DeepSeek API Key
 LLM_PROVIDER=deepseek
 DEEPSEEK_BASE_URL=https://api.deepseek.com
@@ -23,6 +24,7 @@ CORS_ORIGINS=https://你的-vercel-前端域名.vercel.app
 如果使用 OpenAI：
 
 ```text
+PYTHON_VERSION=3.11
 LLM_PROVIDER=openai
 OPENAI_API_KEY=你的 OpenAI API Key
 OPENAI_MODEL=gpt-4o-mini
@@ -139,3 +141,11 @@ VITE_API_BASE_URL=http://localhost:8000/api
 ## 5. 重要限制
 
 当前后端默认使用 SQLite。Render 免费实例的文件系统可能不会长期持久保存用户历史记录；如果要正式长期上线，建议后续改成 PostgreSQL，并把 `DATABASE_URL` 设置为 PostgreSQL 连接串。
+
+如果 Render 日志显示正在使用 Python 3.14，并在安装 `pydantic-core` 时出现 `maturin failed` 或 `Read-only file system`，说明运行时版本太新。仓库已提供 `.python-version`，同时也建议在 Render 环境变量中显式设置：
+
+```text
+PYTHON_VERSION=3.11
+```
+
+修改后使用 **Manual Deploy -> Clear build cache & deploy**，避免旧的 Python 3.14 构建缓存继续生效。
