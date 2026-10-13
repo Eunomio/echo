@@ -1,5 +1,5 @@
 """
-Echo 数据模型
+未必 MAYBE 数据模型
 定义用户、对话、消息、情绪日志、成长记录等核心数据结构
 """
 
@@ -100,3 +100,14 @@ class GrowthRecord(Base):
 
     # 关系
     user = relationship("User", back_populates="growth_records")
+
+
+class GrowthInsight(Base):
+    """The latest saved growth review and the records it summarizes."""
+    __tablename__ = "growth_insights"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, unique=True)
+    source_hash = Column(String(64), nullable=False)
+    report = Column(JSON, nullable=False)
+    generated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)

@@ -1,5 +1,5 @@
 """
-Echo LLM 服务模块
+未必 MAYBE LLM 服务模块
 封装与大模型 API (如 DeepSeek, OpenAI) 的交互，处理多层 Prompt 架构的调用
 """
 
@@ -399,6 +399,14 @@ class LLMService:
                 "reasoning": "大模型返回格式异常。"
             }
         
+    async def generate_growth_insight(self, context: dict) -> dict:
+        response = await self._call_api([
+            {"role": "system", "content": prompts.GROWTH_INSIGHT_PROMPT},
+            {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
+        ], is_json_mode=True, temperature=0.3)
+        cleaned = response.strip().removeprefix('```json').removeprefix('```').removesuffix('```').strip()
+        return json.loads(cleaned)
+
     async def process_full_pipeline(self, user_input: str, history: list = None) -> dict:
         """执行完整的一轮分析流水线"""
         if history is None:

@@ -4,9 +4,8 @@ import axios from 'axios';
 // API Service 配置
 // ============================================================
 
-const DEFAULT_API_BASE_URL = import.meta.env.PROD
-  ? 'https://echo-bjcn.onrender.com/api'
-  : 'http://localhost:8000/api';
+// A single public origin serves the page and proxies /api to FastAPI.
+const DEFAULT_API_BASE_URL = '/api';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || DEFAULT_API_BASE_URL).replace(/\/$/, '');
 
@@ -19,7 +18,7 @@ const apiClient = axios.create({
 });
 
 const getHttpError = async (response) => {
-  let details = '';
+  let details;
   try {
     details = await response.text();
   } catch {
@@ -195,7 +194,7 @@ export const apiService = {
   // 6. 删除对话历史
   async deleteConversation(conversationId) {
     try {
-      const response = await apiClient.delete(`/conversations/${conversationId}`);
+      const response = await apiClient.post(`/conversations/${conversationId}/delete`);
       return response.data;
     } catch (error) {
       console.error('Error deleting conversation:', error);
@@ -223,6 +222,11 @@ export const apiService = {
       console.error('Error fetching growth data:', error);
       throw error;
     }
+  },
+
+  async getGrowthInsight(userId, refresh = false) {
+    const response = await apiClient.post(`/users/${userId}/growth/insight`, { refresh }, { timeout: 120000 });
+    return response.data;
   },
 
   // 7. 获取模拟场景求助建议

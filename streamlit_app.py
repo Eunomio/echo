@@ -1,5 +1,5 @@
 """
-Echo Streamlit deployment entry.
+未必 MAYBE Streamlit deployment entry.
 
 This file provides a single-process web UI for Streamlit Community Cloud while
 reusing the existing backend prompt and LLM service modules.
@@ -19,6 +19,11 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 import prompt_templates as prompts  # noqa: E402
+from emotion_labels import emotion_label  # noqa: E402
+
+PRODUCT_SLOGAN = '另一种解读，另一种可能。'
+PRODUCT_SLOGAN_EN = 'Another perspective. Another possibility.'
+SUPPORT_NOTICE = '本产品提供社交练习与自我反思支持，不能替代专业心理咨询。如有需要，请寻求专业帮助。'
 
 
 BIAS_LABELS = {
@@ -81,8 +86,8 @@ def init_state() -> None:
 
 
 def sidebar() -> None:
-    st.sidebar.title("Echo")
-    st.sidebar.caption("AI 社交焦虑认知训练与复盘系统")
+    st.sidebar.title("未必 MAYBE")
+    st.sidebar.caption(PRODUCT_SLOGAN_EN)
 
     st.session_state.mode = st.sidebar.radio(
         "训练模式",
@@ -114,7 +119,7 @@ def sidebar() -> None:
         st.session_state.messages = []
 
     st.sidebar.divider()
-    st.sidebar.info("Echo 提供自我觉察与练习支持，不替代专业心理咨询或医学诊断。")
+    st.sidebar.info(SUPPORT_NOTICE)
 
 
 def render_messages() -> None:
@@ -125,7 +130,7 @@ def render_messages() -> None:
             biases = message.get("biases")
             if emotion:
                 st.caption(
-                    f"情绪：{emotion.get('emotion', '未知')} · "
+                    f"情绪：{emotion_label(emotion.get('emotion'))} · "
                     f"强度：{round(float(emotion.get('intensity', 0)) * 100)}% · "
                     f"焦虑等级：{emotion.get('anxiety_level', '未知')}"
                 )
@@ -150,7 +155,7 @@ def handle_review_message(user_input: str) -> None:
 
     with st.chat_message("assistant"):
         placeholder = st.empty()
-        with st.spinner("Echo 正在分析情绪与认知模式..."):
+        with st.spinner("正在梳理你的感受和想法..."):
             try:
                 service = get_llm_service()
                 analysis = run_async(service.analyze_emotion_and_biases_merged(user_input))
@@ -169,8 +174,7 @@ def handle_review_message(user_input: str) -> None:
                     "cognitive_biases": None,
                 }
                 response = (
-                    "当前无法连接大模型服务。请确认 Streamlit Secrets 中已经配置可用的 "
-                    "`DEEPSEEK_API_KEY` 或 `OPENAI_API_KEY`，然后再试一次。"
+                    "暂时没能收到回复。你的这条消息还在，可以稍后再试一次。"
                 )
         placeholder.markdown(response)
 
@@ -202,8 +206,7 @@ def handle_simulation_message(user_input: str) -> None:
                 )
             except Exception:
                 response = (
-                    "当前无法连接大模型服务。请确认 Streamlit Secrets 中已经配置可用的 "
-                    "`DEEPSEEK_API_KEY` 或 `OPENAI_API_KEY`，然后再试一次。"
+                    "暂时没能收到回复。你的这条消息还在，可以稍后再试一次。"
                 )
         placeholder.markdown(response)
 
@@ -220,12 +223,12 @@ def render_actions() -> None:
                 except Exception:
                     report = {
                         "score": 0,
-                        "report": "当前无法连接大模型服务，请检查 Streamlit Secrets 中的 API Key 配置。",
+                        "report": "暂时没能生成练习回顾，请稍后再试。",
                     }
             st.session_state.reports.insert(0, report)
     with cols[1]:
         if st.session_state.mode == "simulation" and st.button(
-            "不知道怎么回？",
+            "怎么办？",
             use_container_width=True,
             disabled=not st.session_state.messages,
         ):
@@ -242,7 +245,7 @@ def render_actions() -> None:
                     except Exception:
                         hint = {
                             "suggested_reply": "暂时无法生成建议，请先用一句简单、礼貌、低压力的话回应对方。",
-                            "reasoning": "当前无法连接大模型服务，请检查 Streamlit Secrets 中的 API Key 配置。",
+                            "reasoning": "暂时没能整理出回复建议，可以稍后再试。",
                         }
                 st.success("建议回复")
                 st.write(hint.get("suggested_reply", ""))
@@ -255,13 +258,13 @@ def render_actions() -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="Echo", page_icon="🫧", layout="wide")
+    st.set_page_config(page_title="未必 MAYBE", page_icon=str(ROOT_DIR / "frontend/public/maybe-mark.png"), layout="wide")
     configure_from_secrets()
     init_state()
     sidebar()
 
-    st.title("Echo")
-    st.caption("面向大学生的 AI 社交焦虑认知训练与复盘系统")
+    st.title("未必 MAYBE")
+    st.caption(PRODUCT_SLOGAN)
 
     render_messages()
 

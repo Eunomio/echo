@@ -1,0 +1,17 @@
+.git
+.agents
+.codex
+.aws
+**/node_modules
+**/dist
+**/.venv
+**/__pycache__
+**/.env
+**/.env.*
+deploy/*.env
+**/secrets.toml
+**/*.db
+**/*.db-*
+output
+tmp
+*.log

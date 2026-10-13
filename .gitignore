@@ -10,6 +10,14 @@ lerna-debug.log*
 # Runtime data
 backend/echo.db
 backend/echo.db-journal
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+
+# Local previews and deployment sessions
+/output/
+/tmp/
 
 # Python
 backend/.venv/
@@ -30,8 +38,16 @@ frontend/dist-ssr/
 
 # Environment variables
 .env
+.env.*
+!.env.example
+!**/.env.example
 backend/.env
 frontend/.env
+deploy/*.env
+.streamlit/secrets.toml
+.agents/
+.codex/
+.aws/
 
 # Editor & OS
 .vscode/

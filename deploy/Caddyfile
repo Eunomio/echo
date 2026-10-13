@@ -1,0 +1,26 @@
+{$SITE_ADDRESS} {
+    header X-Content-Type-Options nosniff
+    header Referrer-Policy strict-origin-when-cross-origin
+
+    # Preserve the /api prefix expected by FastAPI and flush SSE immediately.
+    handle /api/* {
+        reverse_proxy backend:8000 {
+            flush_interval -1
+            transport http {
+                response_header_timeout 300s
+                read_timeout 300s
+            }
+        }
+    }
+
+    # SPA routes fall back to index.html; API requests never use this fallback.
+    handle {
+        root * /srv
+        @assets path /assets/*
+        header @assets Cache-Control "public, max-age=31536000, immutable"
+        @entry path / /index.html
+        header @entry Cache-Control "no-cache"
+        try_files {path} /index.html
+        file_server
+    }
+}

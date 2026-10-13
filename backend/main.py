@@ -1,11 +1,15 @@
 """
-Echo Backend Entry Point
+未必 MAYBE Backend Entry Point
 FastAPI 主程序和 API 路由定义
 """
 
 from fastapi import FastAPI, Depends, HTTPException, Body
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
+from collections import defaultdict
+from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 from typing import List, Optional
@@ -16,8 +20,9 @@ import json
 import os
 
 from database import init_db, get_db
-from models import User, Conversation, Message, EmotionLog
+from models import User, Conversation, Message, EmotionLog, GrowthInsight
 from llm_service import llm_service
+from growth_service import growth_snapshot, saved_insight, validate_growth_report
 
 import logging
 
@@ -30,8 +35,8 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 app = FastAPI(
-    title="Echo API",
-    description="AI Social Anxiety Cognitive Training System Backend",
+    title="未必 MAYBE API",
+    description="未必 MAYBE 的情景复盘、社交模拟与练习记录接口",
     version="1.0.0"
 )
 
@@ -73,6 +78,13 @@ class ChatRequest(BaseModel):
 
 class HintRequest(BaseModel):
     reason: str
+
+
+class GrowthInsightRequest(BaseModel):
+    refresh: bool = False
+
+
+growth_insight_locks = defaultdict(asyncio.Lock)
 
 class MessageResponse(BaseModel):
     role: str
@@ -159,6 +171,7 @@ async def get_conversation_detail(conversation_id: int, db: AsyncSession = Depen
     }
 
 @app.delete("/api/conversations/{conversation_id}", summary="删除会话及历史记录")
+@app.post("/api/conversations/{conversation_id}/delete", summary="删除会话及历史记录（托管平台兼容入口）")
 async def delete_conversation(conversation_id: int, db: AsyncSession = Depends(get_db)):
     query_conv = select(Conversation).where(Conversation.id == conversation_id)
     conv = (await db.execute(query_conv)).scalar_one_or_none()
@@ -169,6 +182,7 @@ async def delete_conversation(conversation_id: int, db: AsyncSession = Depends(g
     try:
         # 手动删除关联消息
         await db.execute(delete(Message).where(Message.conversation_id == conversation_id))
+        await db.execute(delete(GrowthInsight).where(GrowthInsight.user_id == conv.user_id))
         # 删除会话
         await db.delete(conv)
         await db.commit()
@@ -231,43 +245,52 @@ async def get_scenarios():
 
 @app.get("/api/users/{user_id}/growth", summary="获取用户成长数据")
 async def get_growth_data(user_id: int, db: AsyncSession = Depends(get_db)):
-    # 简单统计用户数据返回给前端仪表盘
     query_user = select(User).where(User.id == user_id)
     user = (await db.execute(query_user)).scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    query_conv = select(Conversation).where(Conversation.user_id == user_id)
-    convs = (await db.execute(query_conv)).scalars().all()
-
-    query_emo = select(EmotionLog).where(EmotionLog.user_id == user_id)
-    emos = (await db.execute(query_emo)).scalars().all()
-
-    # 提取最近检测到的偏差频率
-    bias_counts = {}
-    for emo in emos:
-        for b in (emo.cognitive_biases or []):
-            b_type = b.get("bias_type")
-            if b_type:
-                bias_counts[b_type] = bias_counts.get(b_type, 0) + 1
-    
-    top_biases = sorted(bias_counts.items(), key=lambda x: x[1], reverse=True)[:3]
-
-    # 提取情绪频率
-    emo_counts = {}
-    for emo in emos:
-        if emo.emotion:
-            emo_counts[emo.emotion] = emo_counts.get(emo.emotion, 0) + 1
-            
-    recent_emotions_stats = [{"emotion": k, "count": v} for k, v in sorted(emo_counts.items(), key=lambda x: x[1], reverse=True)[:5]]
-
+    statistics, context, signature, cached = await growth_snapshot(db, user_id)
     return {
+        **statistics,
         "anxiety_level": user.anxiety_level,
-        "total_sessions": len(convs),
-        "total_emotions_logged": len(emos),
-        "top_biases": [{"type": k, "count": v} for k, v in top_biases],
-        "recent_emotions": recent_emotions_stats
+        "can_generate_insight": bool(context['conversations']),
+        "growth_insight": saved_insight(cached, signature) if context['conversations'] else None,
     }
+
+
+@app.post("/api/users/{user_id}/growth/insight", summary="生成或更新综合成长回顾")
+async def generate_growth_insight(user_id: int, request: Optional[GrowthInsightRequest] = None,
+                                  db: AsyncSession = Depends(get_db)):
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    async with growth_insight_locks[user_id]:
+        _, context, signature, cached = await growth_snapshot(db, user_id)
+        if not context['conversations']:
+            raise HTTPException(status_code=422, detail="先进行一次复盘或模拟对话，再生成成长回顾。")
+        if cached and cached.source_hash == signature and not (request and request.refresh):
+            return {"insight": saved_insight(cached, signature)}
+        try:
+            result = await asyncio.wait_for(llm_service.generate_growth_insight(context), timeout=90)
+            content = validate_growth_report(result, context)
+        except Exception as error:
+            logger.error("Growth insight generation failed for user %s (%s)", user_id, type(error).__name__)
+            raise HTTPException(status_code=502, detail="暂时没能生成成长回顾，请稍后重试。") from error
+        record = cached or GrowthInsight(user_id=user_id)
+        record.source_hash = signature
+        record.generated_at = datetime.now(timezone.utc)
+        record.report = {
+            'content': content,
+            'based_on_sessions': len(context['conversations']),
+            'source_conversations': [{key: item[key] for key in ('id', 'title', 'type', 'created_at')}
+                                     for item in context['conversations']],
+        }
+        db.add(record)
+        await db.commit()
+        db.expire_all()
+        _, _, current_signature, saved = await growth_snapshot(db, user_id)
+        return {"insight": saved_insight(saved, current_signature)}
 
 
 @app.post("/api/chat", summary="核心交互：发送消息并获取 AI 回复")
@@ -405,6 +428,12 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
             yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+# Optional same-origin frontend for single-container application hosting.
+# Register it after API routes so the static mount cannot intercept /api.
+frontend_dist = os.getenv("FRONTEND_DIST")
+if frontend_dist:
+    app.mount("/", StaticFiles(directory=Path(frontend_dist), html=True), name="frontend")
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

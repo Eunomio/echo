@@ -2,6 +2,12 @@ import { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { apiService } from './services/api';
 import './index.css';
+import GrowthInsight from './components/GrowthInsight';
+import { getEmotionLabel } from './utils/emotionLabels';
+
+const PRODUCT_SLOGAN = '另一种解读，另一种可能。';
+const PRODUCT_SLOGAN_EN = 'Another perspective. Another possibility.';
+const SUPPORT_NOTICE = '本产品提供社交练习与自我反思支持，不能替代专业心理咨询。如有需要，请寻求专业帮助。';
 
 // ============================================================
 // Icon Components (inline SVG — no external dependency needed)
@@ -106,6 +112,37 @@ const IconMoon = () => (
   </svg>
 );
 
+const BrandMark = () => (
+  <img className="brand-mark" src="/maybe-mark.png" width="587" height="485" alt="" aria-hidden="true" />
+);
+
+const NAV_ITEMS = [
+  { id: 'review', label: '情景复盘', icon: IconReview },
+  { id: 'simulation', label: '社交模拟', icon: IconSimulation },
+  { id: 'growth', label: '成长记录', icon: IconChart },
+  { id: 'history', label: '历史记录', icon: IconHistory },
+];
+
+function Navigation({ activeNav, onChange, disabled = false, className = '' }) {
+  return (
+    <nav className={className} aria-label="主要功能">
+      {NAV_ITEMS.map(({ id, label, icon: Icon }) => (
+        <button
+          type="button"
+          key={id}
+          className={`nav-item ${activeNav === id || (id === 'history' && activeNav === 'history_view') ? 'active' : ''}`}
+          aria-current={activeNav === id || (id === 'history' && activeNav === 'history_view') ? 'page' : undefined}
+          onClick={() => onChange(id)}
+          disabled={disabled}
+        >
+          <span className="nav-icon"><Icon /></span>
+          <span>{label}</span>
+        </button>
+      ))}
+    </nav>
+  );
+}
+
 // ============================================================
 // Cognitive bias type Chinese labels
 // ============================================================
@@ -127,14 +164,6 @@ const BIAS_DESCRIPTIONS = {
   all_or_nothing: '以极端、绝对的方式看待事物（非黑即白）。',
 };
 
-const formatErrorMessage = (err) => {
-  if (!err) return '未知错误';
-  if (err.response?.data?.detail) return `${err.response.status}: ${err.response.data.detail}`;
-  if (err.response?.status) return `${err.response.status}: ${err.response.statusText || '请求失败'}`;
-  if (err.message) return err.message;
-  return String(err);
-};
-
 // ============================================================
 // Quick-start suggestion prompts
 // ============================================================
@@ -150,17 +179,18 @@ const SUGGESTIONS = [
 // ============================================================
 function App() {
   const [theme, setTheme] = useState(() => {
-    return localStorage.getItem('echo-theme') || 'dark';
+    return localStorage.getItem('maybe-theme') === 'dark' ? 'dark' : 'light';
   });
 
   useEffect(() => {
     const root = document.documentElement;
+    root.classList.toggle('dark', theme === 'dark');
     if (theme === 'light') {
       root.classList.add('light');
     } else {
       root.classList.remove('light');
     }
-    localStorage.setItem('echo-theme', theme);
+    localStorage.setItem('maybe-theme', theme);
   }, [theme]);
 
   const [user, setUser] = useState(null);
@@ -177,6 +207,8 @@ function App() {
   const [customOptions, setCustomOptions] = useState({});
   const [growthData, setGrowthData] = useState(null);
   const [historyList, setHistoryList] = useState([]);
+  const [isPageLoading, setIsPageLoading] = useState(false);
+  const [pageError, setPageError] = useState('');
   const [showReportModal, setShowReportModal] = useState(false);
   const [currentReport, setCurrentReport] = useState('');
   const [isEnding, setIsEnding] = useState(false);
@@ -196,12 +228,15 @@ function App() {
 
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
+  const messageSequence = useRef(0);
+  const nextMessageId = (prefix) => `${prefix}-${++messageSequence.current}`;
 
   // ---- Init data on mount ----
   useEffect(() => {
     const initData = async () => {
-      let activeUser = null;
+      let activeUser;
       try {
+        // Keep the existing account key so previous conversations remain available.
         activeUser = await apiService.getOrCreateUser('EchoUser');
         setUser(activeUser);
       } catch (err) {
@@ -260,29 +295,35 @@ function App() {
 
   // ---- Auto-scroll ----
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (messages.length > 0) messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isLoading, activeNav]);
 
   // ---- Navigation Handler ----
   const handleNavChange = async (nav) => {
+    if (isLoading || isEnding || generatingReportId) return;
     setActiveNav(nav);
-    if (nav === 'growth') {
-      if (user) {
-        try {
-          const data = await apiService.getGrowthData(user.id);
-          setGrowthData(data);
-        } catch (err) {
-          console.error('Failed to fetch growth data:', err);
+    setPageError('');
+    if (nav === 'growth' || nav === 'history' || nav === 'simulation') {
+      setIsPageLoading(true);
+      try {
+        if (nav === 'simulation') {
+          handleNewChat();
+          setScenarios(await apiService.getScenarios());
+        } else {
+          const activeUser = await ensureUser();
+          if (nav === 'growth') {
+            const data = await apiService.getGrowthData(activeUser.id);
+            setGrowthData(data);
+          } else {
+            const history = await apiService.getConversations(activeUser.id);
+            setHistoryList(history);
+          }
         }
-      }
-    } else if (nav === 'history') {
-      if (user) {
-        try {
-          const history = await apiService.getConversations(user.id);
-          setHistoryList(history);
-        } catch (err) {
-          console.error('Failed to fetch history:', err);
-        }
+      } catch (err) {
+        console.error('Failed to load page:', err);
+        setPageError('暂时没能加载内容，请稍后再试。');
+      } finally {
+        setIsPageLoading(false);
       }
     } else {
       handleNewChat();
@@ -297,11 +338,11 @@ function App() {
     if (!content || isLoading) return;
 
     setInputValue('');
-    const userMsg = { id: `u-${Date.now()}`, role: 'user', content };
+    const userMsg = { id: nextMessageId('u'), role: 'user', content };
     setMessages((prev) => [...prev, userMsg]);
     setIsLoading(true);
 
-    const botMsgId = `b-${Date.now()}`;
+    const botMsgId = nextMessageId('b');
     try {
       let botContent = '';
       const activeUser = await ensureUser();
@@ -350,7 +391,7 @@ function App() {
             setConversationId(chunk.conversation_id);
           } else if (chunk.type === 'error') {
             console.error("SSE Error:", chunk.content);
-            botContent = `后端返回错误：${chunk.content || '未知错误'}`;
+            botContent = '这次回复暂时没能完成，请点击下方按钮重试。';
             setMessages((prev) =>
               prev.map((msg) =>
                 msg.id === botMsgId
@@ -368,7 +409,7 @@ function App() {
           msg.id === botMsgId
             ? {
                 ...msg,
-                content: msg.content || '后端没有返回可显示内容。请检查 Render 日志中的大模型 API Key、模型名称或上游接口错误。',
+                content: msg.content || '这次回复暂时没能完成，请点击下方按钮重试。',
                 isStreaming: false,
                 isError: !msg.content
               }
@@ -377,13 +418,12 @@ function App() {
       );
     } catch (err) {
       console.error('Send failed:', err);
-      const errorMessage = formatErrorMessage(err);
       setMessages((prev) => [
         ...prev.filter((msg) => msg.id !== botMsgId),
         {
-          id: `e-${Date.now()}`,
+          id: nextMessageId('e'),
           role: 'assistant',
-          content: `抱歉，连接出现问题。\n\n错误信息：${errorMessage}\n\n请检查 Vercel 的 VITE_API_BASE_URL 是否为 Render 后端地址，并确认 Render 后端已部署成功。`,
+          content: '暂时没能收到回复。你的这条消息还在，可以稍后重试。',
           isError: true
         },
       ]);
@@ -403,7 +443,7 @@ function App() {
     setMessages(prev => prev.filter(m => !m.isError));
     
     setIsLoading(true);
-    const botMsgId = `b-${Date.now()}`;
+    const botMsgId = nextMessageId('b');
     try {
       let botContent = '';
       const activeUser = await ensureUser();
@@ -452,7 +492,7 @@ function App() {
             setConversationId(chunk.conversation_id);
           } else if (chunk.type === 'error') {
             console.error("SSE Error:", chunk.content);
-            botContent = `后端返回错误：${chunk.content || '未知错误'}`;
+            botContent = '这次回复暂时没能完成，请点击下方按钮重试。';
             setMessages((prev) =>
               prev.map((msg) =>
                 msg.id === botMsgId
@@ -470,7 +510,7 @@ function App() {
           msg.id === botMsgId
             ? {
                 ...msg,
-                content: msg.content || '后端没有返回可显示内容。请检查 Render 日志中的大模型 API Key、模型名称或上游接口错误。',
+                content: msg.content || '这次回复暂时没能完成，请点击下方按钮重试。',
                 isStreaming: false,
                 isError: !msg.content
               }
@@ -479,13 +519,12 @@ function App() {
       );
     } catch (err) {
       console.error('Retry failed:', err);
-      const errorMessage = formatErrorMessage(err);
       setMessages((prev) => [
         ...prev.filter((msg) => msg.id !== botMsgId),
         {
-          id: `e-${Date.now()}`,
+          id: nextMessageId('e'),
           role: 'assistant',
-          content: `抱歉，连接依然存在问题。\n\n错误信息：${errorMessage}`,
+          content: '暂时没能收到回复。你的这条消息还在，可以稍后重试。',
           isError: true
         },
       ]);
@@ -541,9 +580,9 @@ function App() {
     
     setMessages([
       {
-        id: `b-init-${Date.now()}`,
+        id: nextMessageId('b-init'),
         role: 'assistant',
-        content: `【已进入场景】\n对方：${scenario.role_name}${optStr}\n\n"${scenario.opening || '你好！'}"`
+        content: `对方：${scenario.role_name}${optStr}\n\n“${scenario.opening || '你好！'}”`
       }
     ]);
   };
@@ -588,7 +627,7 @@ function App() {
       const detail = await apiService.getConversationDetail(conv.id);
       
       const loadedMessages = detail.messages.map((m, idx) => ({
-        id: `m-${idx}-${Date.now()}`,
+        id: `history-${detail.id}-${idx}`,
         role: m.role,
         content: m.content
       }));
@@ -715,16 +754,16 @@ function App() {
   };
 
   const getGrowthStatus = () => {
-    if (!growthData) return { text: '🌱 尚未开启', percent: 0 };
+    if (!growthData?.total_sessions) return { text: '🌱 从一次练习开始', percent: 0 };
     const count = growthData.total_sessions;
     if (count <= 10) {
-      return { text: '🌱 破土萌芽', percent: (count / 10) * 100 };
+      return { text: '🌱 慢慢尝试', percent: (count / 10) * 100 };
     } else if (count <= 30) {
-      return { text: '🌿 茁壮成长', percent: ((count - 10) / 20) * 100 };
+      return { text: '🌿 持续练习', percent: ((count - 10) / 20) * 100 };
     } else if (count <= 100) {
-      return { text: '🌳 枝繁叶茂', percent: ((count - 30) / 70) * 100 };
+      return { text: '🌳 积累经验', percent: ((count - 30) / 70) * 100 };
     } else {
-      return { text: '🌟 社交达人', percent: 100 };
+      return { text: '🌿 用自己的节奏', percent: 100 };
     }
   };
 
@@ -732,30 +771,26 @@ function App() {
 
   return (
     <div className="app-layout">
+      <div className="mobile-brand-bar">
+        <div className="brand-lockup">
+          <img className="brand-logo" src="/maybe-logo.png" width="1243" height="485" alt="未必 MAYBE" />
+        </div>
+        <button type="button" className="theme-toggle-btn" onClick={() => setTheme(prev => prev === 'dark' ? 'light' : 'dark')} aria-label={theme === 'dark' ? '切换至亮色模式' : '切换至深色模式'}>
+          {theme === 'dark' ? <IconSun /> : <IconMoon />}
+        </button>
+      </div>
       {/* ---- SIDEBAR ---- */}
       <aside className="sidebar">
-        <div className="sidebar-brand" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <div className="brand-icon">🫧</div>
-            <span className="brand-text">Echo</span>
+        <div className="sidebar-brand">
+          <div className="brand-lockup">
+            <img className="brand-logo" src="/maybe-logo.png" width="1243" height="485" alt="未必 MAYBE" />
           </div>
           <button 
+            type="button"
             onClick={() => setTheme(prev => prev === 'dark' ? 'light' : 'dark')} 
             className="theme-toggle-btn"
             title={theme === 'dark' ? '切换至亮色模式' : '切换至深色模式'}
-            style={{
-              background: 'none',
-              border: 'none',
-              cursor: 'pointer',
-              color: 'var(--text-secondary)',
-              padding: '6px',
-              borderRadius: '50%',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              transition: 'all var(--transition-fast)',
-              outline: 'none'
-            }}
+            aria-label={theme === 'dark' ? '切换至亮色模式' : '切换至深色模式'}
           >
             {theme === 'dark' ? <IconSun /> : <IconMoon />}
           </button>
@@ -764,47 +799,28 @@ function App() {
         {/* Navigation */}
         <div className="sidebar-section">
           <div className="sidebar-section-title">功能模块</div>
-          <div className={`nav-item ${activeNav === 'review' ? 'active' : ''}`}
-               onClick={() => handleNavChange('review')}>
-            <span className="nav-icon"><IconReview /></span>
-            情景复盘
-          </div>
-          <div className={`nav-item ${activeNav === 'simulation' ? 'active' : ''}`}
-               onClick={() => handleNavChange('simulation')}>
-            <span className="nav-icon"><IconSimulation /></span>
-            社交模拟
-          </div>
-          <div className={`nav-item ${activeNav === 'growth' ? 'active' : ''}`}
-               onClick={() => handleNavChange('growth')}>
-            <span className="nav-icon"><IconChart /></span>
-            成长记录
-          </div>
-          <div className={`nav-item ${activeNav === 'history' ? 'active' : ''}`}
-               onClick={() => handleNavChange('history')}>
-            <span className="nav-icon"><IconHistory /></span>
-            历史记录
-          </div>
+          <Navigation activeNav={activeNav} onChange={handleNavChange} disabled={isPageLoading || isLoading || isEnding || !!generatingReportId} />
         </div>
 
         {/* Status Card */}
         <div className="sidebar-section">
-          <div className="sidebar-section-title">当前状态</div>
+          <div className="sidebar-section-title">练习足迹</div>
           <div className="status-card">
             <div className="status-row">
-              <span className="status-label">状态</span>
+              <span className="status-label">你的节奏</span>
               <span className="status-value status-text">{statusInfo.text}</span>
             </div>
             <div className="progress-track">
               <div className="progress-fill" style={{ width: `${Math.min(Math.max(statusInfo.percent, 0), 100)}%` }} />
             </div>
             <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '8px', textAlign: 'right' }}>
-              已完成 {growthData?.total_sessions || 0} 次对话
+              已记录 {growthData?.total_sessions || 0} 次练习
             </div>
           </div>
         </div>
 
         <div className="sidebar-footer">
-          <p>Echo · AI 社交焦虑认知训练系统</p>
+          <p lang="en">{PRODUCT_SLOGAN_EN}</p>
         </div>
       </aside>
 
@@ -814,16 +830,15 @@ function App() {
         <div className="chat-header">
           <div className="chat-header-title" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             {activeNav === 'simulation' && (selectedScenario || pendingScenario) && (
-              <span 
+              <button
+                type="button"
                 className="back-button" 
                 onClick={handleNewChat}
-                style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', color: 'var(--text-secondary)', marginRight: '4px', transition: 'color var(--transition-fast)' }}
                 title="返回场景列表"
-                onMouseEnter={(e) => e.currentTarget.style.color = 'var(--text-primary)'}
-                onMouseLeave={(e) => e.currentTarget.style.color = 'var(--text-secondary)'}
+                aria-label="返回场景列表"
               >
                 <IconBack />
-              </span>
+              </button>
             )}
             <span className="header-icon"><IconSparkles /></span>
             {activeNav === 'review' ? '情景复盘与认知重构' :
@@ -834,31 +849,41 @@ function App() {
              ) : activeNav === 'growth' ? '成长记录' : 
                  activeNav === 'history_view' ? `历史记录 · ${pendingScenario?.title || ''}` : '历史记录'}
           </div>
-          {conversationId && activeNav !== 'simulation' && activeNav !== 'history' && activeNav !== 'history_view' && (
-            <span className="chat-header-badge" onClick={handleNewChat} style={{ cursor: 'pointer' }}>
+          <div className="header-actions">
+          {conversationId && activeNav === 'review' && (
+            <button type="button" className="chat-header-badge" onClick={handleNewChat} disabled={isLoading || isEnding}>
               + 新对话
-            </span>
+            </button>
           )}
           {activeNav === 'history_view' && (
-            <span className="chat-header-badge" onClick={() => handleNavChange('history')} style={{ cursor: 'pointer' }}>
+            <button type="button" className="chat-header-badge" onClick={() => handleNavChange('history')}>
               &larr; 返回列表
-            </span>
+            </button>
           )}
           {conversationId && (activeNav === 'simulation' || activeNav === 'review') && (
-            <span className="chat-header-badge" onClick={handleEndConversation} style={{ cursor: 'pointer', background: 'var(--accent-glow)', color: 'var(--accent-bright)' }}>
-              {isEnding ? '生成报告中...' : '结束对话'}
-            </span>
+            <button type="button" className="chat-header-badge primary-action" onClick={handleEndConversation} disabled={isLoading || isEnding}>
+              {isEnding ? '正在整理...' : '结束并回顾'}
+            </button>
           )}
+          </div>
         </div>
+
+        <Navigation className="mobile-nav" activeNav={activeNav} onChange={handleNavChange} disabled={isPageLoading || isLoading || isEnding || !!generatingReportId} />
 
         {/* Dynamic Content Area */}
         <div className="messages-container">
-          {activeNav === 'growth' ? (
+          {isPageLoading || pageError ? (
+            <div className="page-state" role="status">
+              <div className="empty-state-icon"><IconReview /></div>
+              <p>{isPageLoading ? '正在加载你的练习内容…' : pageError}</p>
+              {!isPageLoading && <button type="button" className="btn secondary" onClick={() => handleNavChange(activeNav)}>重新加载</button>}
+            </div>
+          ) : activeNav === 'growth' ? (
             /* ---- GROWTH RECORD ---- */
             <div className="dashboard">
               <div className="dash-header">
                 <h2 className="dash-title">成长记录</h2>
-                <p className="dash-subtitle">记录你的认知行为改变轨迹</p>
+                <p className="dash-subtitle">看看你尝试过的练习，以及逐渐留意到的情绪和想法。</p>
               </div>
               {growthData ? (
                 <div className="dash-grid">
@@ -871,11 +896,20 @@ function App() {
                     <div className="dash-stat-label">情绪觉察记录数</div>
                   </div>
                   <div className="dash-card">
-                    <div className="dash-stat-value">{growthData.anxiety_level}</div>
-                    <div className="dash-stat-label">基础焦虑评估分</div>
+                    <div className="empty-state-icon"><IconHistory /></div>
+                    <div className="dash-stat-label">回看每一次尝试</div>
+                    <button type="button" className="btn secondary growth-history-link" onClick={() => handleNavChange('history')}>查看练习记录</button>
                   </div>
+                  <GrowthInsight
+                    userId={user?.id}
+                    insight={growthData.growth_insight}
+                    canGenerate={growthData.can_generate_insight}
+                    onUpdated={(insight) => setGrowthData(previous => previous ? { ...previous, growth_insight: insight } : previous)}
+                    onOpenConversation={handleLoadHistoryChat}
+                    onStartPractice={() => handleNavChange('review')}
+                  />
                   <div className="dash-card wide">
-                    <div className="dash-stat-label">最常出现的认知偏差</div>
+                    <div className="dash-stat-label">值得留意的思维模式</div>
                     <div className="dash-list-vertical">
                       {growthData.top_biases?.length > 0 ? (
                         growthData.top_biases.map(b => (
@@ -893,7 +927,7 @@ function App() {
                           </div>
                         ))
                       ) : (
-                        <div style={{ color: 'var(--text-muted)', fontSize: '14px' }}>暂无足够数据分析认知偏差</div>
+                        <div style={{ color: 'var(--text-muted)', fontSize: '14px' }}>完成一次情景复盘后，可以在这里回看值得留意的想法。</div>
                       )}
                     </div>
                   </div>
@@ -904,13 +938,13 @@ function App() {
                         growthData.recent_emotions.map((e, i) => (
                           <div key={i} className="emo-count-card">
                             <span className="tag emotion" style={{ fontSize: '13px' }}>
-                              {e.emotion}
+                              {getEmotionLabel(e.emotion)}
                             </span>
                             <span className="emo-count-badge">{e.count} 次</span>
                           </div>
                         ))
                       ) : (
-                        <div style={{ color: 'var(--text-muted)', fontSize: '14px' }}>暂无情绪记录</div>
+                        <div style={{ color: 'var(--text-muted)', fontSize: '14px' }}>你的情绪觉察会随着练习慢慢积累。</div>
                       )}
                     </div>
                   </div>
@@ -928,32 +962,31 @@ function App() {
             <div className="dashboard">
               <div className="dash-header" style={{ marginBottom: '24px' }}>
                 <h2 className="dash-title">历史记录</h2>
-                <p className="dash-subtitle">回顾你过去的对话与AI分析报告</p>
+                <p className="dash-subtitle">回看过去的对话，整理当时的感受和下一次可以尝试的行动。</p>
               </div>
               <div className="history-list">
                 {historyList.length > 0 ? historyList.map(conv => (
-                  <div key={conv.id} className="history-item" onClick={() => handleLoadHistoryChat(conv)}>
-                    <div>
-                      <div className="history-title">
+                  <article key={conv.id} className="history-item">
+                    <button type="button" className="history-open" onClick={() => handleLoadHistoryChat(conv)}>
+                      <span className="history-title">
                         {conv.title}
                         {conv.score !== null && conv.score !== undefined && (
-                          <span style={{ marginLeft: '8px', fontSize: '12px', background: 'rgba(99, 102, 241, 0.1)', color: 'var(--accent)', padding: '2px 8px', borderRadius: '12px' }}>
-                            {conv.score} 分
+                          <span className="report-score">
+                            本次练习 {conv.score} 分
                           </span>
                         )}
-                      </div>
-                      <div className="history-meta">
+                      </span>
+                      <span className="history-meta">
                         {conv.type === 'simulation' ? '社交模拟' : '情景复盘'} · {new Date(conv.created_at).toLocaleString('zh-CN')}
-                      </div>
-                    </div>
+                      </span>
+                    </button>
                     <div className="history-item-actions">
                       {conv.has_summary ? (
-                        <div 
-                          style={{ color: 'var(--accent)', cursor: 'pointer', marginRight: '8px', fontSize: '14px', fontWeight: '500' }}
+                        <button type="button" className="history-report-btn"
                           onClick={(e) => handleViewHistoryReport(e, conv)}
                         >
                           查看报告 &rarr;
-                        </div>
+                        </button>
                       ) : (
                         <button 
                           className="btn primary" 
@@ -968,13 +1001,22 @@ function App() {
                         className="history-delete-btn" 
                         onClick={(e) => handleDeleteHistory(e, conv.id)}
                         title="删除记录"
+                        aria-label={`删除记录：${conv.title}`}
                       >
                         <IconTrash />
                       </button>
                     </div>
-                  </div>
+                  </article>
                 )) : (
-                  <div style={{ color: 'var(--text-muted)', fontSize: '14px', textAlign: 'center', marginTop: '40px' }}>暂无历史记录</div>
+                  <div className="page-state">
+                    <div className="empty-state-icon"><IconHistory /></div>
+                    <h3>这里会留下你的练习足迹</h3>
+                    <p>先聊聊一件让你在意的事，或试着练习一段社交对话。</p>
+                    <div className="empty-state-actions">
+                      <button type="button" className="btn primary" onClick={() => handleNavChange('review')}>开始情景复盘</button>
+                      <button type="button" className="btn secondary" onClick={() => handleNavChange('simulation')}>试试社交模拟</button>
+                    </div>
+                  </div>
                 )}
               </div>
             </div>
@@ -991,9 +1033,10 @@ function App() {
               <div className="config-options">
                 {pendingScenario.configurable_options?.map(opt => (
                   <div key={opt.id} className="config-group">
-                    <label className="config-label">{opt.label}</label>
+                    <label className="config-label" htmlFor={`scenario-${opt.id}`}>{opt.label}</label>
                     <select 
                       className="config-select"
+                      id={`scenario-${opt.id}`}
                       value={customOptions[opt.id] || ''}
                       onChange={(e) => setCustomOptions(prev => ({ ...prev, [opt.id]: e.target.value }))}
                     >
@@ -1014,17 +1057,19 @@ function App() {
             <div className="dashboard">
               <div className="dash-header" style={{ marginBottom: '24px' }}>
                 <h2 className="dash-title">选择训练场景</h2>
-                <p className="dash-subtitle">在低风险的环境中，和 AI 扮演的各种角色练习对话技巧</p>
+                <p className="dash-subtitle">选一件你想尝试的小事。发出第一句回复后，可以点击“怎么办？”获取建议。</p>
               </div>
               <div className="scenario-grid">
                 {scenarios.map(s => (
-                  <div key={s.id} className="scenario-card" onClick={() => handleSelectScenarioClick(s)}>
+                  <button type="button" key={s.id} className="scenario-card" onClick={() => handleSelectScenarioClick(s)}>
                     <div className="scenario-icon">{s.icon}</div>
                     <div className="scenario-title">{s.title}</div>
                     <div className="scenario-desc">{s.description}</div>
-                  </div>
+                    <span className="scenario-cta">试试这个场景 <span aria-hidden="true">→</span></span>
+                  </button>
                 ))}
               </div>
+              {scenarios.length === 0 && <div className="page-state"><p>暂时没有可选场景，请稍后重新加载。</p><button type="button" className="btn secondary" onClick={() => handleNavChange('simulation')}>重新加载</button></div>}
             </div>
           ) : (
             /* ---- MESSAGES LIST (Review & Active Simulation & History View) ---- */
@@ -1032,18 +1077,15 @@ function App() {
               {messages.length === 0 && activeNav === 'review' ? (
                 /* ---- Welcome State ---- */
                 <div className="welcome-state">
-                  <div className="welcome-icon-ring">🫧</div>
-                  <h2 className="welcome-title">嗨，欢迎来到 Echo</h2>
-                  <p className="welcome-subtitle">
-                    我是你的 AI 认知训练助手。
-                    你可以告诉我最近在社交中遇到的困扰，我会帮你分析情绪和思维模式，
-                    一起找到更客观的视角。
-                  </p>
+                  <div className="welcome-icon-ring"><BrandMark /></div>
+                  <h2 className="welcome-title">欢迎来到「未必」</h2>
+                  <p className="welcome-subtitle">{PRODUCT_SLOGAN}</p>
+                  <p className="suggestions-label">选一个你有共鸣的情景，或写下最近让你在意的事。</p>
                   <div className="welcome-suggestions">
                     {SUGGESTIONS.map((s, i) => (
-                      <div key={i} className="suggestion-chip" onClick={() => handleSend(s)}>
-                        {s}
-                      </div>
+                      <button type="button" key={i} className="suggestion-chip" onClick={() => { setInputValue(s); inputRef.current?.focus(); }}>
+                        <span>{s}</span><span className="suggestion-arrow" aria-hidden="true">↗</span>
+                      </button>
                     ))}
                   </div>
                 </div>
@@ -1081,7 +1123,7 @@ function App() {
                         <div className="analysis-tags">
                           <span className="tag emotion">
                             <span className="tag-icon"><IconActivity /></span>
-                            情绪: {msg.emotion.emotion}
+                            情绪: {getEmotionLabel(msg.emotion.emotion)}
                             {msg.emotion.intensity != null && ` · ${Math.round(msg.emotion.intensity * 100)}%`}
                           </span>
                           {msg.emotion.anxiety_level && (
@@ -1128,13 +1170,14 @@ function App() {
                   ref={inputRef}
                   type="text"
                   className="input-field"
+                  aria-label={activeNav === 'simulation' ? '你的对话回复' : '你的社交经历'}
                   value={inputValue}
                   onChange={(e) => setInputValue(e.target.value)}
                   placeholder={getPlaceholder()}
                   disabled={isInputDisabled}
                 />
                 
-                {activeNav === 'simulation' && selectedScenario && messages.length > 0 && (
+                {activeNav === 'simulation' && selectedScenario && conversationId && (
                   <button 
                     type="button" 
                     className="hint-btn" 
@@ -1153,12 +1196,14 @@ function App() {
                   onClick={toggleRecording}
                   disabled={isInputDisabled}
                   title={isRecording ? "停止录音" : "语音输入"}
+                    aria-label={isRecording ? '停止录音' : '语音输入'}
                 >
                   <IconMic />
                 </button>
                 <button
                   type="submit"
                   className="send-btn"
+                  aria-label="发送消息"
                   disabled={!inputValue.trim() || isInputDisabled}
                 >
                   <IconSend />
@@ -1166,11 +1211,16 @@ function App() {
               </form>
               <div className="input-disclaimer">
                 {activeNav === 'simulation' 
-                  ? 'AI 扮演的模拟角色回复仅供练习参考，请以轻松的心态进行对话。'
-                  : 'Echo 基于 CBT 认知行为疗法框架提供引导，不替代专业心理咨询。'}
+                  ? (conversationId ? '按自己的节奏练习，需要帮助时可以点击“怎么办？”。' : '先试着回复一句，之后可以点击“怎么办？”获取建议。')
+                  : SUPPORT_NOTICE}
               </div>
             </div>
           </div>
+        )}
+        {import.meta.env.VITE_ICP_RECORD && (
+          <footer className="filing-footer">
+            <a href="https://beian.miit.gov.cn/" target="_blank" rel="noreferrer">{import.meta.env.VITE_ICP_RECORD}</a>
+          </footer>
         )}
       </main>
 
@@ -1180,27 +1230,27 @@ function App() {
           setShowReportModal(false); 
           if (activeNav !== 'history') handleNewChat(); 
         }}>
-          <div className="modal-content" onClick={e => e.stopPropagation()}>
+          <div className="modal-content" role="dialog" aria-modal="true" aria-label="本次练习回顾" onClick={e => e.stopPropagation()}>
             <div className="modal-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <IconSparkles />
-                本次对话分析报告
+                本次练习回顾
               </div>
               {currentScore !== null && currentScore !== undefined && (
                 <div style={{ background: 'var(--accent-glow)', color: 'var(--accent-bright)', padding: '4px 12px', borderRadius: '20px', fontSize: '16px', fontWeight: 'bold' }}>
-                  {currentScore} 分
+                  本次练习 {currentScore} 分
                 </div>
               )}
             </div>
             <div className="report-body markdown-body">
-              {currentReport ? <ReactMarkdown>{currentReport}</ReactMarkdown> : "生成报告失败，或对话太短未能生成总结。"}
+              {currentReport ? <ReactMarkdown>{currentReport}</ReactMarkdown> : '暂时没有可显示的回顾，可以继续聊几句后再试。'}
             </div>
             <div className="modal-actions">
               <button className="btn primary" onClick={() => { 
                 setShowReportModal(false); 
                 if (activeNav !== 'history') handleNewChat(); 
               }}>
-                {activeNav === 'history' ? '我知道了' : '完成并开启新对话'}
+                {activeNav === 'history' ? '我知道了' : '完成，开始新对话'}
               </button>
             </div>
           </div>
@@ -1211,7 +1261,7 @@ function App() {
       {deleteConfirmId && (
         <div className="modal-overlay" onClick={() => setDeleteConfirmId(null)}>
           <div className="modal-content" style={{ maxWidth: '400px' }} onClick={e => e.stopPropagation()}>
-            <div className="modal-title" style={{ color: '#ff4d4d' }}>
+            <div className="modal-title" style={{ color: 'var(--red)' }}>
               <IconAlert />
               确认删除
             </div>
@@ -1222,7 +1272,7 @@ function App() {
               <button className="btn secondary" onClick={() => setDeleteConfirmId(null)}>
                 取消
               </button>
-              <button className="btn primary" style={{ background: '#ff4d4d', borderColor: '#ff4d4d' }} onClick={confirmDelete}>
+              <button className="btn danger" onClick={confirmDelete}>
                 确定删除
               </button>
             </div>
@@ -1242,7 +1292,7 @@ function App() {
             {!hintResult ? (
               <>
                 <div className="report-body" style={{ marginBottom: '16px' }}>
-                  描述一下你觉得犹豫或不知道怎么回答的理由，AI教练会根据当前场景为你提供回复建议：
+                  说说你正在担心什么，我们一起想一句适合当前情景的回复。
                 </div>
                 <textarea 
                   className="input-field" 
@@ -1267,7 +1317,7 @@ function App() {
                     <span style={{ color: 'var(--text-primary)' }}>"{hintResult.suggested_reply}"</span>
                   </div>
                   <div>
-                    <strong>教练解析：</strong><br/>
+                    <strong>为什么可以这样说：</strong><br/>
                     {hintResult.reasoning}
                   </div>
                 </div>
@@ -1288,10 +1338,10 @@ function App() {
             <div className="loading-pulse-ring">
               <IconSparkles />
             </div>
-            <div className="loading-text">正在生成心理成长报告</div>
+            <div className="loading-text" role="status">正在整理本次练习</div>
             <div className="loading-subtitle">
-              AI 认知教练正在深度复盘本次对话<br />
-              为您梳理情绪觉察、认知偏差和下一步行动建议...
+              回看你的感受和想法<br />
+              整理下一次可以尝试的小行动…
             </div>
             <div className="loading-bar-container">
               <div className="loading-bar-fill" />
