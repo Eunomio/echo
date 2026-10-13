@@ -1,6 +1,7 @@
 """Exercise growth reviews in an isolated database, without model network calls."""
 import asyncio
 import copy
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -146,6 +147,28 @@ class GrowthTests(unittest.TestCase):
         self.assertEqual(result.status_code, 200)
         self.assertEqual(result.json()['insight']['based_on_sessions'], 10)
         self.assertEqual(len(self.model.await_args.args[0]['conversations']), 10)
+
+    def test_streamed_analysis_is_saved_in_message_and_stats(self):
+        analysis = {
+            'emotion_analysis': {'emotion': 'neutral', 'intensity': 0.2, 'trigger_event': '一次课堂回答'},
+            'cognitive_biases': {'detected_biases': [{'bias_type': 'mind_reading', 'confidence': 0.8}]},
+        }
+        async def reply(*args, **kwargs):
+            yield '可以试着区分你观察到的事实和自己的推测。'
+        with patch.object(llm_service, 'analyze_emotion_and_biases_merged', AsyncMock(return_value=analysis)), \
+             patch.object(llm_service, 'generate_socratic_response_stream', reply):
+            response = self.client.post('/api/chat', json={
+                'user_id': self.user_id, 'conversation_id': self.conv_id,
+                'session_type': 'review', 'content': '我担心课堂上的回答让同学觉得我很笨。',
+            })
+        self.assertEqual(response.status_code, 200)
+        events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith('data: ')]
+        self.assertEqual(events[-1]['type'], 'analysis')
+        self.assertEqual(events[-1]['emotion_analysis']['emotion'], 'neutral')
+        stats = self.client.get(self.path).json()
+        self.assertEqual(stats['total_emotions_logged'], 2)
+        self.assertEqual(stats['recent_emotions'], [{'emotion': '中性情绪', 'count': 2}])
+        self.assertEqual(stats['top_biases'], [{'type': 'mind_reading', 'count': 1}])
 
 
 if __name__ == '__main__':

@@ -19,7 +19,7 @@ import asyncio
 import json
 import os
 
-from database import init_db, get_db
+from database import init_db, get_db, async_session
 from models import User, Conversation, Message, EmotionLog, GrowthInsight
 from llm_service import llm_service
 from growth_service import growth_snapshot, saved_insight, validate_growth_report
@@ -342,13 +342,13 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
 
     # 4. 定义异步 SSE 生成器
     async def event_generator():
+        analysis_task = None
         try:
             # 立即发送 conversation_id 消息
             yield f"data: {json.dumps({'type': 'conv_id', 'conversation_id': conversation_id})}\n\n"
             await asyncio.sleep(0.01)
 
             # 4a. 如果是 CBT 复盘模式，启动并行后台任务做情绪和偏差合并分析
-            analysis_task = None
             if request.session_type != "simulation":
                 analysis_task = asyncio.create_task(
                     llm_service.analyze_emotion_and_biases_merged(request.content)
@@ -382,50 +382,44 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
                 except Exception as ex:
                     logger.error(f"Background CBT analysis failed: {ex}", exc_info=True)
 
-            # 6. 保存并更新 AI 回复与分析数据到数据库
-            # 更新用户消息关联的情绪和偏差数据
-            user_msg.emotion = emotion_data.get("emotion", "")
-            user_msg.emotion_intensity = emotion_data.get("intensity", 0.0)
-            user_msg.cognitive_bias_data = bias_data
-            
-            # 记录情绪日志
-            if emotion_data.get("emotion"):
-                emo_log = EmotionLog(
-                    user_id=request.user_id,
-                    emotion=emotion_data.get("emotion"),
-                    intensity=emotion_data.get("intensity", 0.5),
-                    trigger=emotion_data.get("trigger_event", ""),
-                    cognitive_biases=bias_data.get("detected_biases", [])
-                )
-                db.add(emo_log)
-            
-            # 保存 AI 助手回复消息
-            assistant_msg = Message(
-                conversation_id=conversation_id,
-                role="assistant",
-                content=full_reply
-            )
-            db.add(assistant_msg)
-            
-            # 更新会话级认知偏差信息
-            conv = (await db.execute(select(Conversation).where(Conversation.id == conversation_id))).scalar_one()
-            current_biases = list(conv.cognitive_biases) if conv.cognitive_biases else []
-            new_biases = [b.get("bias_type") for b in bias_data.get("detected_biases", []) if b.get("bias_type")]
-            
-            for nb in new_biases:
-                if nb not in current_biases:
-                    current_biases.append(nb)
-            conv.cognitive_biases = current_biases
+            # Yield dependencies may close before streaming starts. Persist using
+            # a fresh session and reload the message instead of mutating a detached object.
+            async with async_session() as stream_db:
+                saved_message = await stream_db.get(Message, user_msg.id)
+                conv = await stream_db.get(Conversation, conversation_id)
+                if saved_message is None or conv is None:
+                    raise ValueError("The conversation was removed before the reply finished")
+                saved_message.emotion = emotion_data.get("emotion", "")
+                saved_message.emotion_intensity = emotion_data.get("intensity", 0.0)
+                saved_message.cognitive_bias_data = bias_data
 
-            await db.commit()
+                if emotion_data.get("emotion"):
+                    stream_db.add(EmotionLog(
+                        user_id=request.user_id,
+                        emotion=emotion_data.get("emotion"),
+                        intensity=emotion_data.get("intensity", 0.5),
+                        trigger=emotion_data.get("trigger_event", ""),
+                        cognitive_biases=bias_data.get("detected_biases", []),
+                    ))
+                stream_db.add(Message(conversation_id=conversation_id, role="assistant", content=full_reply))
+                current_biases = list(conv.cognitive_biases or [])
+                for bias in bias_data.get("detected_biases", []):
+                    name = bias.get("bias_type")
+                    if name and name not in current_biases:
+                        current_biases.append(name)
+                conv.cognitive_biases = current_biases
+                await stream_db.commit()
 
             # 7. 发送最终的分析结构消息
             yield f"data: {json.dumps({'type': 'analysis', 'emotion_analysis': emotion_data, 'cognitive_biases': bias_data})}\n\n"
 
         except Exception as e:
             logger.error(f"Error in SSE event stream: {e}", exc_info=True)
-            await db.rollback()
-            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'content': '暂时没能收到回复，请稍后重试。'})}\n\n"
+        finally:
+            if analysis_task and not analysis_task.done():
+                analysis_task.cancel()
+                await asyncio.gather(analysis_task, return_exceptions=True)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
