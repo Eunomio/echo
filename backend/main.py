@@ -23,6 +23,8 @@ from database import init_db, get_db, async_session
 from models import User, Conversation, Message, EmotionLog, GrowthInsight
 from llm_service import llm_service
 from growth_service import growth_snapshot, saved_insight, validate_growth_report
+from demo_data import ensure_example_user, is_example_user, require_editable_user
+import prompt_templates as prompts
 
 import logging
 
@@ -107,6 +109,12 @@ async def health_check():
     return {"status": "healthy", "version": "1.0.0"}
 
 
+@app.post("/api/examples/profile", summary="查看独立的虚构使用示例")
+async def get_example_profile(db: AsyncSession = Depends(get_db)):
+    user = await ensure_example_user(db)
+    return {"id": user.id, "nickname": user.nickname, "is_example": True}
+
+
 @app.post("/api/users", summary="创建或获取测试用户")
 async def create_test_user(nickname: str = Body(..., embed=True), db: AsyncSession = Depends(get_db)):
     """创建一个新用户或返回已有用户，主要用于测试/比赛"""
@@ -125,7 +133,7 @@ async def create_test_user(nickname: str = Body(..., embed=True), db: AsyncSessi
 
 @app.get("/api/users/{user_id}/conversations", summary="获取用户的对话历史列表")
 async def get_user_conversations(user_id: int, db: AsyncSession = Depends(get_db)):
-    query = select(Conversation).where(Conversation.user_id == user_id).order_by(Conversation.created_at.desc())
+    query = select(Conversation).where(Conversation.user_id == user_id).order_by(Conversation.updated_at.desc(), Conversation.id.desc())
     result = await db.execute(query)
     conversations = result.scalars().all()
     
@@ -136,7 +144,8 @@ async def get_user_conversations(user_id: int, db: AsyncSession = Depends(get_db
             "type": c.session_type, 
             "score": c.score,
             "has_summary": bool(c.summary and c.summary.strip()),
-            "created_at": c.created_at
+            "created_at": c.created_at,
+            "updated_at": c.updated_at,
         } for c in conversations
     ]
 
@@ -151,7 +160,7 @@ async def get_conversation_detail(conversation_id: int, db: AsyncSession = Depen
         raise HTTPException(status_code=404, detail="Conversation not found")
         
     # 获取消息
-    query_msg = select(Message).where(Message.conversation_id == conversation_id).order_by(Message.created_at.asc())
+    query_msg = select(Message).where(Message.conversation_id == conversation_id).order_by(Message.created_at.asc(), Message.id.asc())
     result_msg = await db.execute(query_msg)
     messages = result_msg.scalars().all()
     
@@ -161,10 +170,16 @@ async def get_conversation_detail(conversation_id: int, db: AsyncSession = Depen
         "type": conv.session_type,
         "summary": conv.summary,
         "score": conv.score,
+        "scenario_id": (conv.simulation_config or {}).get('scenario_id'),
+        "custom_options": (conv.simulation_config or {}).get('custom_options', {}),
+        "scenario_title": (conv.simulation_config or {}).get('title', ''),
+        "read_only": is_example_user(await db.get(User, conv.user_id)),
         "messages": [
             {
                 "role": m.role,
                 "content": m.content,
+                "emotion_analysis": {"emotion": m.emotion, "intensity": m.emotion_intensity} if m.emotion else None,
+                "cognitive_biases": m.cognitive_bias_data,
                 "created_at": m.created_at
             } for m in messages
         ]
@@ -178,7 +193,8 @@ async def delete_conversation(conversation_id: int, db: AsyncSession = Depends(g
     
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
-        
+
+    await require_editable_user(db, conv.user_id)
     try:
         # 手动删除关联消息
         await db.execute(delete(Message).where(Message.conversation_id == conversation_id))
@@ -200,7 +216,9 @@ async def end_conversation(conversation_id: int, db: AsyncSession = Depends(get_
     
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
-        
+
+    if is_example_user(await db.get(User, conv.user_id)):
+        return {"summary": conv.summary, "score": conv.score}
     query_msg = select(Message).where(Message.conversation_id == conversation_id).order_by(Message.created_at.asc())
     messages = (await db.execute(query_msg)).scalars().all()
     
@@ -226,7 +244,8 @@ async def get_conversation_hint(conversation_id: int, request: HintRequest, db: 
     
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
-        
+
+    await require_editable_user(db, conv.user_id)
     query_msg = select(Message).where(Message.conversation_id == conversation_id).order_by(Message.created_at.asc())
     messages = (await db.execute(query_msg)).scalars().all()
     history = [{"role": m.role, "content": m.content} for m in messages if m.role in ["user", "assistant"]]
@@ -269,6 +288,8 @@ async def generate_growth_insight(user_id: int, request: Optional[GrowthInsightR
         _, context, signature, cached = await growth_snapshot(db, user_id)
         if not context['conversations']:
             raise HTTPException(status_code=422, detail="先进行一次复盘或模拟对话，再生成成长回顾。")
+        if is_example_user(user):
+            return {"insight": saved_insight(cached, signature)}
         if cached and cached.source_hash == signature and not (request and request.refresh):
             return {"insight": saved_insight(cached, signature)}
         try:
@@ -301,30 +322,54 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
     并持久化到数据库。
     """
     # 1. 验证用户
-    query_user = select(User).where(User.id == request.user_id)
-    user = (await db.execute(query_user)).scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+    await require_editable_user(db, request.user_id)
         
     # 2. 处理 Conversation 会话
     conversation_id = request.conversation_id
     history = []
+    session_type = request.session_type
+    scenario_id = request.scenario_id
+    custom_options = request.custom_options or {}
     
     if not conversation_id:
+        if session_type not in ('review', 'simulation', 'free_chat'):
+            raise HTTPException(status_code=422, detail='请选择复盘或社交模拟后继续。')
+        if session_type == 'simulation':
+            scenario_id = scenario_id or 'stranger_event'
+            if scenario_id not in prompts.SIMULATION_SCENARIOS:
+                raise HTTPException(status_code=422, detail='请选择一个可用的模拟场景。')
+        scenario = prompts.SIMULATION_SCENARIOS.get(scenario_id, {}) if session_type == 'simulation' else {}
         # 新建会话
-        title_prefix = "场景复盘" if request.session_type == "review" else "社交模拟"
+        title_prefix = "场景复盘" if session_type == "review" else "社交模拟"
         new_conv = Conversation(
             user_id=request.user_id,
-            session_type=request.session_type,
+            session_type=session_type,
+            scenario=scenario.get('description', ''),
+            simulation_config={'scenario_id': scenario_id, 'custom_options': custom_options, 'title': scenario['title']}
+                              if scenario else {},
             title=f"{title_prefix}: {request.content[:15]}..."
         )
         db.add(new_conv)
         await db.commit()
         await db.refresh(new_conv)
         conversation_id = new_conv.id
+        conv = new_conv
+        if scenario:
+            opening = Message(conversation_id=conversation_id, role='assistant', content=scenario['opening'])
+            db.add(opening)
+            history.append({'role': 'assistant', 'content': scenario['opening']})
     else:
+        conv = await db.get(Conversation, conversation_id)
+        if conv is None or conv.user_id != request.user_id:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        # The saved conversation determines the mode and role, even when a client
+        # omits settings or sends the currently selected navigation tab by mistake.
+        session_type = conv.session_type
+        config = conv.simulation_config or {}
+        scenario_id = config.get('scenario_id')
+        custom_options = config.get('custom_options', {})
         # 获取历史消息构造上下文
-        query_msg = select(Message).where(Message.conversation_id == conversation_id).order_by(Message.created_at.asc())
+        query_msg = select(Message).where(Message.conversation_id == conversation_id).order_by(Message.created_at.asc(), Message.id.asc())
         old_messages = (await db.execute(query_msg)).scalars().all()
         for msg in old_messages:
             if msg.role in ["user", "assistant"]:
@@ -337,6 +382,9 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
         content=request.content
     )
     db.add(user_msg)
+    conv.summary = ''
+    conv.score = None
+    conv.updated_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(user_msg)
 
@@ -349,18 +397,16 @@ async def chat_endpoint(request: ChatRequest, db: AsyncSession = Depends(get_db)
             await asyncio.sleep(0.01)
 
             # 4a. 如果是 CBT 复盘模式，启动并行后台任务做情绪和偏差合并分析
-            if request.session_type != "simulation":
+            if session_type != "simulation":
                 analysis_task = asyncio.create_task(
                     llm_service.analyze_emotion_and_biases_merged(request.content)
                 )
 
             # 4b. 启动前台回复流式生成
             full_reply = ""
-            if request.session_type == "simulation":
-                scenario_id = getattr(request, 'scenario_id', 'stranger_event')
-                custom_opts = getattr(request, 'custom_options', None)
+            if session_type == "simulation":
                 async for chunk in llm_service.generate_simulation_response_stream(
-                    request.content, history, scenario_id, custom_opts
+                    request.content, history, scenario_id, custom_options
                 ):
                     full_reply += chunk
                     yield f"data: {json.dumps({'type': 'content', 'content': chunk})}\n\n"

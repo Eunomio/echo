@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { apiService } from '../services/api';
 
-export default function GrowthInsight({ userId, insight, canGenerate, onUpdated, onOpenConversation, onStartPractice }) {
+export default function GrowthInsight({ userId, insight, canGenerate, readOnly = false, onUpdated, onOpenConversation, onStartPractice }) {
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState('');
   const content = insight?.content;
@@ -46,7 +46,7 @@ export default function GrowthInsight({ userId, insight, canGenerate, onUpdated,
     <section className="dash-card wide growth-insight" aria-labelledby="growth-insight-title">
       <div className="growth-insight-header">
         <h3 id="growth-insight-title">综合回顾与成长建议</h3>
-        {canGenerate && <button type="button" className="btn secondary" onClick={generate} disabled={isGenerating || !userId}>
+        {canGenerate && !readOnly && <button type="button" className="btn secondary" onClick={generate} disabled={isGenerating || !userId}>
           {isGenerating ? '正在整理…' : !insight ? '生成成长回顾' : insight.stale ? '更新回顾' : '重新生成'}
         </button>}
       </div>

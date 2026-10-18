@@ -171,7 +171,7 @@ def get_simulation_prompt(scenario_id: str, custom_options: dict = None) -> str:
     scenario = SIMULATION_SCENARIOS.get(scenario_id)
     if not scenario:
         # 兜底
-        return "你是一个友善的陌生人，正在和用户进行日常对话。保持自然，每次回复1-3句话。"
+        return "继续已有的社交模拟，沿用历史对话中对方的身份、称呼、情景和语气，从上一句话自然接续。不要重新开场或擅自切换角色，不提供心理分析或练习指导。保持口语化，每次回复1-3句话。"
 
     # 解析自定义选项
     custom_text = ""

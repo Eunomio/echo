@@ -38,6 +38,7 @@ class Conversation(Base):
     session_type = Column(String(30), nullable=False)  # review | simulation | free_chat
     title = Column(String(100), default="新对话")
     scenario = Column(Text, default="")  # 社交情景描述
+    simulation_config = Column(JSON, default=dict)  # 恢复模拟时沿用的场景与角色设置
     cognitive_biases = Column(JSON, default=list)  # 识别到的认知偏差列表
     summary = Column(Text, default="")  # AI 生成的会话摘要
     score = Column(Integer, nullable=True) # 对话打分

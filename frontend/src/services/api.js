@@ -28,6 +28,9 @@ const getHttpError = async (response) => {
 };
 
 export const apiService = {
+  async getExampleProfile() {
+    return (await apiClient.post('/examples/profile')).data;
+  },
   // 1. 获取测试用户
   async getOrCreateUser(nickname = '测试用户') {
     try {

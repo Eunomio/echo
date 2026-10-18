@@ -4,6 +4,7 @@ import { apiService } from './services/api';
 import './index.css';
 import GrowthInsight from './components/GrowthInsight';
 import { getEmotionLabel } from './utils/emotionLabels';
+import { emptyChatDraft, useChatDrafts } from './hooks/useChatDrafts';
 
 const PRODUCT_SLOGAN = '另一种解读，另一种可能。';
 const PRODUCT_SLOGAN_EN = 'Another perspective. Another possibility.';
@@ -177,7 +178,8 @@ const SUGGESTIONS = [
 // ============================================================
 // App Component
 // ============================================================
-function App() {
+function App({ profile, onProfileChange, initialNav }) {
+  const isExample = profile === 'example';
   const [theme, setTheme] = useState(() => {
     return localStorage.getItem('maybe-theme') === 'dark' ? 'dark' : 'light';
   });
@@ -194,20 +196,20 @@ function App() {
   }, [theme]);
 
   const [user, setUser] = useState(null);
-  const [messages, setMessages] = useState([]);
-  const [inputValue, setInputValue] = useState('');
+  const {
+    messages, setMessages, inputValue, setInputValue, conversationId, setConversationId,
+    pendingScenario, setPendingScenario, selectedScenario, setSelectedScenario,
+    customOptions, setCustomOptions, title: chatTitle, fromHistory,
+    chatType, selectChatType, replaceDraft, appendSpeech, markSpeechTarget,
+  } = useChatDrafts(initialNav === 'simulation' ? 'simulation' : 'review');
   const [isLoading, setIsLoading] = useState(false);
-  const [conversationId, setConversationId] = useState(null);
-  const [activeNav, setActiveNav] = useState('review');
+  const [activeNav, setActiveNav] = useState(isExample ? 'growth' : initialNav);
   
   // New States for Simulation and Growth
   const [scenarios, setScenarios] = useState([]);
-  const [pendingScenario, setPendingScenario] = useState(null);
-  const [selectedScenario, setSelectedScenario] = useState(null);
-  const [customOptions, setCustomOptions] = useState({});
   const [growthData, setGrowthData] = useState(null);
   const [historyList, setHistoryList] = useState([]);
-  const [isPageLoading, setIsPageLoading] = useState(false);
+  const [isPageLoading, setIsPageLoading] = useState(true);
   const [pageError, setPageError] = useState('');
   const [showReportModal, setShowReportModal] = useState(false);
   const [currentReport, setCurrentReport] = useState('');
@@ -237,10 +239,14 @@ function App() {
       let activeUser;
       try {
         // Keep the existing account key so previous conversations remain available.
-        activeUser = await apiService.getOrCreateUser('EchoUser');
+        activeUser = profile === 'example'
+          ? await apiService.getExampleProfile()
+          : await apiService.getOrCreateUser('EchoUser');
         setUser(activeUser);
       } catch (err) {
         console.error('Failed to initialize user:', err);
+        setPageError('暂时没能加载练习内容，请稍后再试。');
+        setIsPageLoading(false);
         return;
       }
 
@@ -256,6 +262,9 @@ function App() {
         setGrowthData(growth);
       } catch (err) {
         console.error('Failed to fetch initial growth data:', err);
+        setPageError('暂时没能加载练习内容，请稍后再试。');
+      } finally {
+        setIsPageLoading(false);
       }
     };
     initData();
@@ -270,7 +279,7 @@ function App() {
 
       recognition.onresult = (event) => {
         const transcript = event.results[0][0].transcript;
-        setInputValue(prev => prev + transcript);
+        appendSpeech(transcript);
       };
 
       recognition.onerror = (event) => {
@@ -284,11 +293,14 @@ function App() {
 
       recognitionRef.current = recognition;
     }
-  }, []);
+    return () => recognitionRef.current?.abort();
+  }, [profile, appendSpeech]);
 
   const ensureUser = async () => {
     if (user?.id) return user;
-    const freshUser = await apiService.getOrCreateUser('EchoUser');
+    const freshUser = isExample
+      ? await apiService.getExampleProfile()
+      : await apiService.getOrCreateUser('EchoUser');
     setUser(freshUser);
     return freshUser;
   };
@@ -300,14 +312,23 @@ function App() {
 
   // ---- Navigation Handler ----
   const handleNavChange = async (nav) => {
-    if (isLoading || isEnding || generatingReportId) return;
+    if (isPageLoading || isLoading || isEnding || generatingReportId) return;
+    if (isExample && (nav === 'review' || nav === 'simulation')) {
+      onProfileChange('personal', nav);
+      return;
+    }
     setActiveNav(nav);
     setPageError('');
+    if (nav === 'review' || nav === 'simulation') {
+      if (isRecording) recognitionRef.current?.stop();
+      selectChatType(nav);
+      setHintReason('');
+      setHintResult(null);
+    }
     if (nav === 'growth' || nav === 'history' || nav === 'simulation') {
       setIsPageLoading(true);
       try {
         if (nav === 'simulation') {
-          handleNewChat();
           setScenarios(await apiService.getScenarios());
         } else {
           const activeUser = await ensureUser();
@@ -325,17 +346,13 @@ function App() {
       } finally {
         setIsPageLoading(false);
       }
-    } else {
-      handleNewChat();
-      setSelectedScenario(null);
-      setPendingScenario(null);
     }
   };
 
   // ---- Send message handler ----
   const handleSend = async (text) => {
     const content = (text || inputValue).trim();
-    if (!content || isLoading) return;
+    if (!content || isLoading || isPageLoading || isExample) return;
 
     setInputValue('');
     const userMsg = { id: nextMessageId('u'), role: 'user', content };
@@ -362,7 +379,7 @@ function App() {
       await apiService.sendMessage({
         userId: activeUser.id,
         conversationId,
-        sessionType: activeNav,
+        sessionType: chatType,
         scenarioId: selectedScenario?.id,
         customOptions: customOptions,
         content,
@@ -434,6 +451,7 @@ function App() {
   };
 
   const handleRetry = async () => {
+    if (isLoading || isPageLoading || isEnding || isExample) return;
     const lastUserMsgIndex = messages.map(m => m.role).lastIndexOf('user');
     if (lastUserMsgIndex === -1) return;
     
@@ -463,7 +481,7 @@ function App() {
       await apiService.sendMessage({
         userId: activeUser.id,
         conversationId,
-        sessionType: activeNav,
+        sessionType: chatType,
         scenarioId: selectedScenario?.id,
         customOptions: customOptions,
         content: lastUserMsg.content,
@@ -541,12 +559,12 @@ function App() {
 
   // ---- New conversation ----
   const handleNewChat = () => {
-    setMessages([]);
-    setConversationId(null);
-    setInputValue('');
-    setSelectedScenario(null);
-    setPendingScenario(null);
-    setCustomOptions({});
+    replaceDraft(chatType, emptyChatDraft());
+    setShowHintModal(false);
+    setHintReason('');
+    setHintResult(null);
+    setCurrentScore(null);
+    setCurrentReport('');
     if (isRecording && recognitionRef.current) {
       recognitionRef.current.stop();
       setIsRecording(false);
@@ -623,21 +641,37 @@ function App() {
   };
 
   const handleLoadHistoryChat = async (conv) => {
+    if (isPageLoading || isLoading || isEnding || generatingReportId) return;
+    setIsPageLoading(true);
+    setPageError('');
     try {
       const detail = await apiService.getConversationDetail(conv.id);
+      const type = detail.type === 'simulation' ? 'simulation' : 'review';
       
       const loadedMessages = detail.messages.map((m, idx) => ({
         id: `history-${detail.id}-${idx}`,
         role: m.role,
-        content: m.content
+        content: m.content,
+        emotion: m.role === 'assistant' ? detail.messages[idx - 1]?.emotion_analysis : null,
+        biases: m.role === 'assistant' ? detail.messages[idx - 1]?.cognitive_biases : null,
       }));
-      
-      setMessages(loadedMessages);
-      setConversationId(detail.id);
-      setPendingScenario({ title: detail.title }); 
-      setActiveNav('history_view');
+
+      const savedScenario = scenarios.find(item => item.id === detail.scenario_id);
+      replaceDraft(type, {
+        messages: loadedMessages, conversationId: detail.id,
+        selectedScenario: type === 'simulation'
+          ? savedScenario || { id: detail.scenario_id, title: detail.scenario_title || detail.title }
+          : null,
+        customOptions: detail.custom_options || {}, title: detail.title, fromHistory: true,
+      });
+      setHintReason('');
+      setHintResult(null);
+      setActiveNav(isExample || detail.read_only ? 'history_view' : type);
     } catch (err) {
       console.error('Failed to load history chat', err);
+      setPageError('暂时没能打开这次对话，请返回历史记录后再试。');
+    } finally {
+      setIsPageLoading(false);
     }
   };
 
@@ -721,7 +755,7 @@ function App() {
   // Render Helpers
   // ============================================================
   
-  const isInputDisabled = isLoading || isEnding || activeNav === 'growth' || activeNav === 'history' || (activeNav === 'simulation' && !selectedScenario);
+  const isInputDisabled = isExample || isPageLoading || isLoading || isEnding || activeNav === 'growth' || activeNav === 'history' || (activeNav === 'simulation' && !selectedScenario);
   
   const getPlaceholder = () => {
     if (activeNav === 'growth') return '在成长记录中不可发送消息...';
@@ -745,6 +779,7 @@ function App() {
       setIsRecording(false);
     } else {
       try {
+        markSpeechTarget();
         recognitionRef.current.start();
         setIsRecording(true);
       } catch (err) {
@@ -841,23 +876,31 @@ function App() {
               </button>
             )}
             <span className="header-icon"><IconSparkles /></span>
-            {activeNav === 'review' ? '情景复盘与认知重构' :
+            <span className="chat-header-label">
+            {activeNav === 'review' ? (chatTitle ? `情景复盘 · ${chatTitle}` : '情景复盘与认知重构') :
              activeNav === 'simulation' ? (
                 (selectedScenario || pendingScenario)
                   ? `社交模拟训练 · ${(selectedScenario || pendingScenario).title}`
                   : '社交模拟训练'
              ) : activeNav === 'growth' ? '成长记录' : 
-                 activeNav === 'history_view' ? `历史记录 · ${pendingScenario?.title || ''}` : '历史记录'}
+                 activeNav === 'history_view' ? `历史记录 · ${chatTitle}` : '历史记录'}
+            </span>
           </div>
           <div className="header-actions">
+          <button type="button" className="chat-header-badge profile-switch"
+            onClick={() => onProfileChange(isExample ? 'personal' : 'example')}
+            disabled={isPageLoading || isLoading || isEnding || !!generatingReportId}
+          >
+            {isExample ? '返回我的练习' : '查看使用示例'}
+          </button>
           {conversationId && activeNav === 'review' && (
             <button type="button" className="chat-header-badge" onClick={handleNewChat} disabled={isLoading || isEnding}>
               + 新对话
             </button>
           )}
-          {activeNav === 'history_view' && (
-            <button type="button" className="chat-header-badge" onClick={() => handleNavChange('history')}>
-              &larr; 返回列表
+          {(activeNav === 'history_view' || (fromHistory && (activeNav === 'review' || activeNav === 'simulation'))) && (
+            <button type="button" className="chat-header-badge" onClick={() => handleNavChange('history')} disabled={isLoading || isEnding}>
+              &larr; 返回历史记录
             </button>
           )}
           {conversationId && (activeNav === 'simulation' || activeNav === 'review') && (
@@ -869,6 +912,11 @@ function App() {
         </div>
 
         <Navigation className="mobile-nav" activeNav={activeNav} onChange={handleNavChange} disabled={isPageLoading || isLoading || isEnding || !!generatingReportId} />
+
+        {isExample && <div className="example-notice" role="note">
+          <div><strong>林澄的练习记录 · 虚构示例</strong><p>查看四周的尝试与回顾。对话、报告和成长建议均为虚构示例。</p></div>
+          <button type="button" className="btn secondary" onClick={() => onProfileChange('personal')}>开始自己的练习</button>
+        </div>}
 
         {/* Dynamic Content Area */}
         <div className="messages-container">
@@ -904,6 +952,7 @@ function App() {
                     userId={user?.id}
                     insight={growthData.growth_insight}
                     canGenerate={growthData.can_generate_insight}
+                    readOnly={isExample}
                     onUpdated={(insight) => setGrowthData(previous => previous ? { ...previous, growth_insight: insight } : previous)}
                     onOpenConversation={handleLoadHistoryChat}
                     onStartPractice={() => handleNavChange('review')}
@@ -977,7 +1026,7 @@ function App() {
                         )}
                       </span>
                       <span className="history-meta">
-                        {conv.type === 'simulation' ? '社交模拟' : '情景复盘'} · {new Date(conv.created_at).toLocaleString('zh-CN')}
+                        {conv.type === 'simulation' ? '社交模拟' : '情景复盘'} · {new Date(conv.updated_at || conv.created_at).toLocaleString('zh-CN')} · {isExample ? '查看对话' : '继续对话'}
                       </span>
                     </button>
                     <div className="history-item-actions">
@@ -997,14 +1046,14 @@ function App() {
                           {generatingReportId === conv.id ? '生成中...' : '生成报告'}
                         </button>
                       )}
-                      <button 
+                      {!isExample && <button
                         className="history-delete-btn" 
                         onClick={(e) => handleDeleteHistory(e, conv.id)}
                         title="删除记录"
                         aria-label={`删除记录：${conv.title}`}
                       >
                         <IconTrash />
-                      </button>
+                      </button>}
                     </div>
                   </article>
                 )) : (
@@ -1226,10 +1275,7 @@ function App() {
 
       {/* ---- REPORT MODAL ---- */}
       {showReportModal && (
-        <div className="modal-overlay" onClick={() => { 
-          setShowReportModal(false); 
-          if (activeNav !== 'history') handleNewChat(); 
-        }}>
+        <div className="modal-overlay" onClick={() => setShowReportModal(false)}>
           <div className="modal-content" role="dialog" aria-modal="true" aria-label="本次练习回顾" onClick={e => e.stopPropagation()}>
             <div className="modal-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -1246,11 +1292,12 @@ function App() {
               {currentReport ? <ReactMarkdown>{currentReport}</ReactMarkdown> : '暂时没有可显示的回顾，可以继续聊几句后再试。'}
             </div>
             <div className="modal-actions">
-              <button className="btn primary" onClick={() => { 
-                setShowReportModal(false); 
-                if (activeNav !== 'history') handleNewChat(); 
-              }}>
-                {activeNav === 'history' ? '我知道了' : '完成，开始新对话'}
+              {!isExample && (activeNav === 'review' || activeNav === 'simulation') && <button className="btn secondary" onClick={() => {
+                setShowReportModal(false);
+                handleNewChat();
+              }}>开始新对话</button>}
+              <button className="btn primary" onClick={() => setShowReportModal(false)}>
+                {activeNav === 'review' || activeNav === 'simulation' ? '继续对话' : '关闭回顾'}
               </button>
             </div>
           </div>
@@ -1353,4 +1400,19 @@ function App() {
   );
 }
 
-export default App;
+export default function ProfileApp() {
+  const [profile, setProfile] = useState(() => {
+    const requested = new URLSearchParams(window.location.search).get('example') === '1';
+    return requested || localStorage.getItem('maybe-profile') === 'example' ? 'example' : 'personal';
+  });
+  const [initialNav, setInitialNav] = useState('review');
+  const changeProfile = (nextProfile, nav = 'review') => {
+    localStorage.setItem('maybe-profile', nextProfile);
+    const url = new URL(window.location.href);
+    url.searchParams.delete('example');
+    window.history.replaceState(null, '', url);
+    setInitialNav(nav);
+    setProfile(nextProfile);
+  };
+  return <App key={profile} profile={profile} onProfileChange={changeProfile} initialNav={initialNav} />;
+}

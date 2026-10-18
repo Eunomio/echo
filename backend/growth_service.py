@@ -49,7 +49,7 @@ def validate_growth_report(data, context):
 async def growth_snapshot(db, user_id):
     conversations = list((await db.execute(select(Conversation).where(
         Conversation.user_id == user_id
-    ).order_by(Conversation.created_at, Conversation.id))).scalars())
+    ).order_by(Conversation.updated_at, Conversation.id))).scalars())
     messages = list((await db.execute(select(Message).join(Conversation).where(
         Conversation.user_id == user_id
     ).order_by(Message.created_at, Message.id))).scalars())
